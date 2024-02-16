@@ -83,6 +83,25 @@ def sneaky(logger: logging.Logger = None, console: bool = False):
     return decorate
 
 
+def socket_description(sock):
+    '''[id: 0xd829bade, L:/127.0.0.1:2069 - R:/127.0.0.1:55666]'''
+    sock_id = hex(id(sock))
+    fileno = sock.fileno()
+    s_addr = None
+    try:
+        s_addr, s_port = sock.getsockname()[:2]
+        d_addr, d_port = sock.getpeername()[:2]
+        return f"[id: {sock_id}, fd: {fileno}, L:/{s_addr}:{s_port} - R:/{d_addr}:{d_port}]"
+        pass
+    except Exception:
+        if s_addr:
+            return f"[id: {sock_id}, fd: {fileno}, LISTENING]"
+        else:
+            return f"[id: {sock_id}, fd: {fileno}, CLOSED]"
+
+    return f"{sock.getsockname()} <=> {sock.getpeername()}"
+
+
 if __name__ == '__main__':
     from elephant_sock5.protocol import SessionRequest, jrpc_to_bytes, bytes_to_frame
 

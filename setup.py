@@ -12,7 +12,7 @@ exec(open("elephant_sock5/version.py").read())
 
 config = {
     'name': 'elephant-sock5',
-    'url': 'https://github.com/ruanhao/elephant-sock5-py',
+    'url': 'https://github.com/ruanhao/elephant-sock5-client-py',
     'license': 'MIT',
     "long_description": long_description,
     "long_description_content_type": 'text/markdown',

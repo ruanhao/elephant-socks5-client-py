@@ -1,10 +1,11 @@
 import click
+import ssl
 import logging
 import websocket
 from concurrent.futures import Future
 from websocket._abnf import ABNF
 from elephant_sock5.protocol import bytes_to_frame, hello, OP_CONTROL, OP_DATA, JRPCResponse, SessionRequest, Hello, Frame, TerminationRequest
-from elephant_sock5.utils import LengthFieldBasedFrameDecoder, chunk_list, sneaky
+from elephant_sock5.utils import LengthFieldBasedFrameDecoder, chunk_list, sneaky, socket_description
 from click import secho
 import json
 from py_netty import ServerBootstrap, ChannelHandlerAdapter, EventLoopGroup
@@ -83,7 +84,7 @@ def on_close(ws, close_status_code, close_msg):
 
 @sneaky()
 def on_open(ws):
-    print("[on_open] Opened connection", ws)
+    print("[on_open] Opened connection", socket_description(ws.sock.sock))
     global tunnel
     tunnel = ws
     obj = Hello()
@@ -101,7 +102,11 @@ def start_client(url):
         on_close=on_close
     )
     # ws.run_forever(dispatcher=rel, reconnect=5)
-    ws.run_forever(reconnect=5)
+    if url.startswith('wss://'):
+        ws.run_forever(reconnect=10, sslopt={"cert_reqs": ssl.CERT_NONE})
+    else:
+        ws.run_forever(reconnect=10)
+    # ws.run_forever(reconnect=10)
     # rel.signal(2, rel.abort)
     # rel.dispatch()
 
