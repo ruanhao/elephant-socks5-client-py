@@ -22,7 +22,7 @@ config = {
     'keywords': ['proxy', 'http', 'non-blocking', 'py-netty', 'socks5'],
     'version': __version__,
     'packages': find_packages(),
-    'install_requires': ['click', 'py-netty==0.0.38', 'websocket-client', 'attrs'],
+    'install_requires': ['click', 'py-netty', 'websocket-client', 'attrs'],
     'python_requires': ">=3.7, <4",
     'setup_requires': ['wheel'],
     'package_data': {'elephant_sock5': ['*']},

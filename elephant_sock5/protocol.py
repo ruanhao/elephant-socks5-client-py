@@ -27,10 +27,13 @@ OP_DATA = 1
 class JRPC:
 
     jrpc: str = field(default='2.0')
-    id: str = field(factory=lambda: str(uuid.uuid4()))
+    id: str = field(factory=lambda: str(uuid.uuid4()).split('-')[-1])
     params: dict = field(factory=dict)
     result: dict = field(factory=dict)
     error: dict = field(factory=dict)
+
+    def to_frame(self):
+        return _jrpc_to_frame(self)
 
     def to_frame_bytes(self):
         return _jrpc_to_bytes(self)
@@ -54,9 +57,10 @@ class JRPCResponse(JRPC):
     method: str = field(default=None)
 
     @classmethod
-    def of(cls, id):
+    def of(cls, id, method=None):
         r = cls()
         r.id = id
+        r.method = method
         return r
 
 
@@ -135,12 +139,16 @@ def frame_to_bytes(frame: Frame) -> bytes:
     return frame_data
 
 
-def _jrpc_to_bytes(jrpc_obj: JRPC) -> bytes:
+def _jrpc_to_frame(jrpc_obj: JRPC) -> Frame:
     payload = json.dumps(asdict(jrpc_obj)).encode('utf-8')
     frame = Frame(
         payload=payload
     )
-    return frame_to_bytes(frame)
+    return frame
+
+
+def _jrpc_to_bytes(jrpc_obj: JRPC) -> bytes:
+    return frame_to_bytes(_jrpc_to_frame(jrpc_obj))
 
 
 def hello(jrpc_obj=None) -> bytes:

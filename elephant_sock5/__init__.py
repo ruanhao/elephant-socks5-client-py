@@ -1,10 +1,11 @@
 import click
+from datetime import datetime
 import ssl
 import logging
 import websocket
 from concurrent.futures import Future
 from websocket._abnf import ABNF
-from elephant_sock5.protocol import bytes_to_frame, hello, OP_CONTROL, OP_DATA, JRPCResponse, SessionRequest, Hello, Frame, TerminationRequest
+from elephant_sock5.protocol import bytes_to_frame, OP_CONTROL, OP_DATA, JRPCResponse, SessionRequest, Hello, Frame, TerminationRequest
 from elephant_sock5.utils import LengthFieldBasedFrameDecoder, chunk_list, sneaky, socket_description
 from click import secho
 import json
@@ -13,7 +14,7 @@ from py_netty import ServerBootstrap, ChannelHandlerAdapter, EventLoopGroup
 
 logger = logging.getLogger(__name__)
 
-URL = "ws://localhost:4443/elephant/ws"
+URL = "ws[s]://localhost:4443/elephant/ws"
 
 decoder = LengthFieldBasedFrameDecoder()
 
@@ -23,29 +24,77 @@ tunnel = None
 
 clients = {}
 
+_quiet = False
+_trace_data = False
+_session_request_timeout = 3
+
+
+def _trace(frame: Frame, send=True, method: str = None):
+    if _quiet:
+        return
+    direction = '>>>' if send else '<<<'
+    fg = 'yellow' if not send else None
+    now = f"{str(datetime.now()):<20}"
+    if frame.op_type == OP_CONTROL:
+        jrpc = json.loads(frame.payload.decode('utf-8'))
+        jrpc_id = jrpc['id']
+        method = method or jrpc.get('method')
+        if not method:
+            if jrpc_id in responseFuture:
+                method, _ = responseFuture.get(jrpc_id)
+            else:
+                method = '??????'
+
+        if 'hello' in method:
+            msg0 = jrpc.get('jrpc', jrpc.get('jsonrpc', "???"))
+        elif 'response' in method:
+            msg0 = jrpc.get('result', jrpc)
+        elif 'request' in method:
+            msg0 = jrpc.get('params', jrpc)
+        else:
+            msg0 = jrpc
+
+        if isinstance(msg0, dict):
+            msg0 = json.dumps(msg0)
+
+        msg = f"{now} | {direction} | {method:<25} | {jrpc_id} | {msg0}"
+        if method == 'session-request-response':
+            current_total = len(clients) + 1
+            msg += f" | current total: {current_total}"
+    elif frame.op_type == OP_DATA:
+        if not _trace_data:
+            return
+        session_id = frame.session_id
+        msg = f"{now} | {direction} | [{'OP_DATA: ' + str(session_id):<25}] <<{len(frame.payload)} bytes>>"
+        ctx = clients.get(session_id)
+        if ctx:
+            msg += f" {ctx.channel()}"
+        if not send and not ctx:
+            fg = 'red'
+    else:
+        msg = f"{now} | {direction} | Are you kidding me?"
+    logger.debug(msg)
+    click.secho(msg, fg=fg)
+
 
 def handle_frame(ws, frame_bytes):
-    # print(socket_description(ws.sock.sock))
     frame = bytes_to_frame(frame_bytes)
-
+    _trace(frame, send=False)
     if frame.op_type == OP_CONTROL:
         payload = frame.payload
         jrpc = json.loads(payload.decode('utf-8'))
         jrpc_id = jrpc['id']
-        assert jrpc_id
-        method = None
+
         if jrpc_id in responseFuture:
             method, future = responseFuture.get(jrpc_id)
             del responseFuture[jrpc_id]
         else:                   # request
-            pass
-        if not method:
-            method = jrpc.get('method', 'UNKNOWN')
-        print(f"<={method}=", jrpc)
+            method = jrpc.get('method')
+
         if method == 'echo-request':
-            ws.send(JRPCResponse.of(jrpc_id).to_frame_bytes(), ABNF.OPCODE_BINARY)
+            _send_frame(JRPCResponse.of(jrpc_id).to_frame(), 'echo-response')
         elif method == 'termination-request':
-            ws.send(JRPCResponse.of(jrpc_id).to_frame_bytes(), ABNF.OPCODE_BINARY)
+            _send_frame(JRPCResponse.of(jrpc_id).to_frame(), 'termination-response')
             session_id = jrpc['params']['session-id']
             if session_id in clients:
                 ctx = clients[session_id]
@@ -55,9 +104,7 @@ def handle_frame(ws, frame_bytes):
             future.set_result(jrpc)
         elif method == 'agent-hello-ack':
             pass
-
     elif frame.op_type == OP_DATA:
-        # print("<=Data=", frame)
         session_id = frame.session_id
         payload = frame.payload
         if session_id in clients:
@@ -72,24 +119,42 @@ def on_message(ws, bytes):
         handle_frame(ws, frame)
 
 
+def on_close(ws, close_status_code, close_msg):
+    msg = f"[on_close] Connection closed, status code: {close_status_code}, message: {close_msg}"
+    logger.info(msg)
+    click.secho(msg, underline=True, fg='red')
+
+
 def on_error(ws, error):
     if error and str(error):
         secho(f"[on_error] {error}", fg='red')
 
 
-def on_close(ws, close_status_code, close_msg):
-    if close_status_code is not None and close_msg is not None:
-        logger.debug(f"[on_close] {close_status_code} {close_msg}")
+def _send_frame(frame: Frame, method: str = None) -> None:
+    global tunnel
+    if not tunnel or not tunnel.sock:
+        raise Exception("Tunnel is not ready")
+    if tunnel.sock.fileno() < 0:
+        raise Exception("Tunnel is not active")
+    _trace(frame, True, method)
+    tunnel.send(frame.to_bytes(), ABNF.OPCODE_BINARY)
 
 
 @sneaky()
 def on_open(ws):
-    print("[on_open] Opened connection", socket_description(ws.sock.sock))
+    msg = f"[on_open] Opened connection {socket_description(ws.sock.sock)}"
+    logger.info(msg)
+    click.secho(msg, underline=True)
+    for ctx in clients.copy().values():
+        logger.info(f"Closing {ctx.channel()}")
+        ctx.close()
+    responseFuture.clear()
+    clients.clear()
     global tunnel
     tunnel = ws
     obj = Hello()
     responseFuture[obj.id] = ('agent-hello-ack', Future())
-    ws.send(hello(obj), ABNF.OPCODE_BINARY)
+    _send_frame(obj.to_frame())
 
 
 @sneaky()
@@ -117,11 +182,10 @@ class ProxyChannelHandler(ChannelHandlerAdapter):
         self._session_id = None
 
     def exception_caught(self, ctx, exception):
-        click.secho(f"[exception_caught] {exception}", fg='red')
+        logger.error("[Exception Caught] %s : %s", ctx.channel(), str(exception), exc_info=exception)
         ctx.close()
 
     def channel_read(self, ctx, bytebuf):
-        # print(f"[channel read] {len(bytebuf)} bytes")
         global tunnel
         if not self._session_id:
             # sr = SessionRequest.of('10.74.113.125', 8080)
@@ -129,9 +193,8 @@ class ProxyChannelHandler(ChannelHandlerAdapter):
             sr = SessionRequest.sock5()
             future = Future()
             responseFuture[sr.id] = ('session-request-response', future)
-            tunnel.send(sr.to_frame_bytes(), ABNF.OPCODE_BINARY)
-            r = future.result()
-            print("--->", r)
+            _send_frame(sr.to_frame())
+            r = future.result(_session_request_timeout)
             self._session_id = r['result']['session-id']
             clients[self._session_id] = ctx
 
@@ -141,22 +204,61 @@ class ProxyChannelHandler(ChannelHandlerAdapter):
                 session_id=self._session_id,
                 payload=sub_bytebuf,
             )
-            tunnel.send(data_frame.to_bytes(), ABNF.OPCODE_BINARY)
+            _send_frame(data_frame)
+
+    def channel_active(self, ctx):
+        msg = f"[channel_active] {ctx.channel()}"
+        logger.info(msg)
+        click.secho(msg, fg='green')
 
     def channel_inactive(self, ctx):
+        msg = f"[channel_inactive] {ctx.channel()}"
+        click.secho(msg, fg='bright_black')
         if self._session_id:
             tr = TerminationRequest.of(self._session_id)
             responseFuture[tr.id] = ('termination-response', Future())
-            tunnel.send(tr.to_frame_bytes(), ABNF.OPCODE_BINARY)
+            _send_frame(tr.to_frame())
             if self._session_id in clients:
                 del clients[self._session_id]
         pass
 
 
+def _config_logging():
+    from logging.handlers import RotatingFileHandler
+
+    logging.basicConfig(
+        handlers=[
+            RotatingFileHandler(
+                filename="elephant-client.log",
+                maxBytes=10 * 1024 * 1024,  # 10M
+                backupCount=10,
+            ),
+            # logging.StreamHandler(),  # default to stderr
+        ],
+        level=logging.INFO,
+        format='%(asctime)s.%(msecs)03d - %(name)s - %(levelname)s - %(threadName)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    logger.setLevel(logging.INFO)
+
+
 @click.command(short_help="Elephant SOCK5 client", context_settings=dict(help_option_names=['-h', '--help']))
 @click.option('--port', '-p', default=1080, help="Local port to bind", show_default=True, type=int)
 @click.option('--server', '-s', 'url', help=f"Elephant tunnel server URL (like: {URL})", type=str, required=True)
-def _cli(port, url):
+@click.option('--quiet', '-q', is_flag=True, help="Quiet mode")
+@click.option('--log-record', '-l', 'save_log', is_flag=True, help="Save log to file (elephant-client.log)")
+@click.option('--session-request-timeout', '-t', default=3, help="Session request timeout", show_default=True, type=int)
+def _cli(port, url, quiet, save_log, session_request_timeout):
+    global _quiet
+    global _session_request_timeout
+    _session_request_timeout = session_request_timeout
+    if quiet:
+        _quiet = True
+        logger.setLevel(logging.ERROR)
+
+    if save_log:
+        _config_logging()
+
     sb = ServerBootstrap(
         parant_group=EventLoopGroup(1, 'Acceptor'),
         child_group=EventLoopGroup(1, 'Worker'),
@@ -164,13 +266,11 @@ def _cli(port, url):
     )
 
     sb.bind(port=port)
-    print(f"Proxy server started at port {port}")
+    msg = f"Proxy server started at port {port}"
+    logger.info(msg)
+    click.echo(msg)
     start_client(url)
 
 
 def _run():
     _cli()
-
-
-if __name__ == '__main__':
-    pass
