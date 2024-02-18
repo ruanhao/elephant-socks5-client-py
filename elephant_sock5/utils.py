@@ -1,6 +1,7 @@
 from typing import List
 import traceback
 import os
+import re
 import sys
 from functools import wraps
 import inspect
@@ -100,6 +101,11 @@ def socket_description(sock):
             return f"[id: {sock_id}, fd: {fileno}, CLOSED]"
 
     return f"{sock.getsockname()} <=> {sock.getpeername()}"
+
+
+def has_format_placeholders(s):
+    pattern = re.compile(r'\{.*\}|\%[sd]')
+    return bool(re.search(pattern, s))
 
 
 if __name__ == '__main__':

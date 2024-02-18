@@ -6,13 +6,15 @@ import websocket
 from concurrent.futures import Future
 from websocket._abnf import ABNF
 from elephant_sock5.protocol import bytes_to_frame, OP_CONTROL, OP_DATA, JRPCResponse, SessionRequest, Hello, Frame, TerminationRequest
-from elephant_sock5.utils import LengthFieldBasedFrameDecoder, chunk_list, sneaky, socket_description
+from elephant_sock5.utils import LengthFieldBasedFrameDecoder, chunk_list, sneaky, socket_description, has_format_placeholders
+from elephant_sock5.version import __version__
 from click import secho
 import json
+import string
 from py_netty import ServerBootstrap, ChannelHandlerAdapter, EventLoopGroup
 
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("elephant-sock5")
 
 URL = "ws[s]://localhost:4443/elephant/ws"
 
@@ -27,6 +29,30 @@ clients = {}
 _quiet = False
 _trace_data = False
 _session_request_timeout = 3
+_no_color = False
+
+
+def log_print(msg, *args, fg=None, underline=None, level=logging.INFO, **kwargs):
+    logger.log(level, msg, *args, **kwargs)
+    if not _quiet:
+        message = msg
+        if has_format_placeholders(msg):
+            try:
+                message = string.Formatter().format(msg, *args, **kwargs)
+            except Exception:
+                pass
+            if has_format_placeholders(message):
+                try:
+                    message = message % args
+                except Exception:
+                    pass
+        else:
+            message = ' '.join(map(str, (msg, *args)))
+
+        if _no_color:
+            fg = None
+            underline = None
+        secho(message, fg=fg, underline=underline)
 
 
 def _trace(frame: Frame, send=True, method: str = None):
@@ -58,9 +84,19 @@ def _trace(frame: Frame, send=True, method: str = None):
             msg0 = json.dumps(msg0)
 
         msg = f"{now} | {direction} | {method:<25} | {jrpc_id} | {msg0}"
+
+        current_total = None
         if method == 'session-request-response':
             current_total = len(clients) + 1
-            msg += f" | current total: {current_total}"
+        elif method == 'termination-request':
+            current_total = len(clients) - 1
+        elif method == 'termination-response':
+            current_total = len(clients)
+        if current_total is not None:
+            msg += f" | sessions: {current_total}"
+        if logger.isEnabledFor(logging.DEBUG):
+            msg += f" | futures: {len(responseFuture) - 1}"
+
     elif frame.op_type == OP_DATA:
         if not _trace_data:
             return
@@ -73,8 +109,8 @@ def _trace(frame: Frame, send=True, method: str = None):
             fg = 'red'
     else:
         msg = f"{now} | {direction} | Are you kidding me?"
-    logger.debug(msg)
-    click.secho(msg, fg=fg)
+
+    log_print(msg, fg=fg, level=logging.DEBUG)
 
 
 def handle_frame(ws, frame_bytes):
@@ -120,20 +156,20 @@ def on_message(ws, bytes):
 
 
 def on_close(ws, close_status_code, close_msg):
-    msg = f"[on_close] Connection closed, status code: {close_status_code}, message: {close_msg}"
-    logger.info(msg)
-    click.secho(msg, underline=True, fg='red')
+    log_print(f"[on_close] Connection closed, status code: {close_status_code}, message: {close_msg}", fg='red')
 
 
 def on_error(ws, error):
     if error and str(error):
-        secho(f"[on_error] {error}", fg='red')
+        log_print(f"[on_error] {error}", fg='red')
 
 
 def _send_frame(frame: Frame, method: str = None) -> None:
     global tunnel
-    if not tunnel or not tunnel.sock:
-        raise Exception("Tunnel is not ready")
+    if not tunnel:
+        raise Exception("Tunnel is not ready (None))")
+    if not tunnel.sock:
+        raise Exception("Tunnel is not ready (No socket)")
     if tunnel.sock.fileno() < 0:
         raise Exception("Tunnel is not active")
     _trace(frame, True, method)
@@ -142,11 +178,10 @@ def _send_frame(frame: Frame, method: str = None) -> None:
 
 @sneaky()
 def on_open(ws):
-    msg = f"[on_open] Opened connection {socket_description(ws.sock.sock)}"
-    logger.info(msg)
-    click.secho(msg, underline=True)
+    log_print(f"[on_open] Opened connection {socket_description(ws.sock.sock)}", fg='bright_blue')
+    if clients:
+        log_print(f"Closing {len(clients)} stale connections ...", fg='magenta')
     for ctx in clients.copy().values():
-        logger.info(f"Closing {ctx.channel()}")
         ctx.close()
     responseFuture.clear()
     clients.clear()
@@ -207,13 +242,10 @@ class ProxyChannelHandler(ChannelHandlerAdapter):
             _send_frame(data_frame)
 
     def channel_active(self, ctx):
-        msg = f"[channel_active] {ctx.channel()}"
-        logger.info(msg)
-        click.secho(msg, fg='green')
+        log_print(f"[channel_active] {ctx.channel()}", fg='green')
 
     def channel_inactive(self, ctx):
-        msg = f"[channel_inactive] {ctx.channel()}"
-        click.secho(msg, fg='bright_black')
+        log_print(f"[channel_inactive] {ctx.channel()}", fg='bright_black')
         if self._session_id:
             tr = TerminationRequest.of(self._session_id)
             responseFuture[tr.id] = ('termination-response', Future())
@@ -247,17 +279,26 @@ def _config_logging():
 @click.option('--server', '-s', 'url', help=f"Elephant tunnel server URL (like: {URL})", type=str, required=True)
 @click.option('--quiet', '-q', is_flag=True, help="Quiet mode")
 @click.option('--log-record', '-l', 'save_log', is_flag=True, help="Save log to file (elephant-client.log)")
-@click.option('--session-request-timeout', '-t', default=3, help="Session request timeout", show_default=True, type=int)
-def _cli(port, url, quiet, save_log, session_request_timeout):
+@click.option('--request-timeout', '-t', 'session_request_timeout', default=3, help="Session request timeout", show_default=True, type=int)
+@click.option('--no-color', is_flag=True, help="Disable color output")
+@click.option('--verbose', '-v', 'verbose', is_flag=True, help="Verbose mode")
+@click.version_option(version=__version__, prog_name="Elephant SOCK5 Client")
+def _cli(port, url, quiet, save_log, session_request_timeout, no_color, verbose):
     global _quiet
     global _session_request_timeout
+    global _no_color
+    _no_color = no_color
     _session_request_timeout = session_request_timeout
-    if quiet:
-        _quiet = True
-        logger.setLevel(logging.ERROR)
 
     if save_log:
         _config_logging()
+
+    if verbose:
+        logger.setLevel(logging.DEBUG)
+
+    if quiet:
+        _quiet = True
+        logger.setLevel(logging.ERROR)
 
     sb = ServerBootstrap(
         parant_group=EventLoopGroup(1, 'Acceptor'),
@@ -266,11 +307,23 @@ def _cli(port, url, quiet, save_log, session_request_timeout):
     )
 
     sb.bind(port=port)
-    msg = f"Proxy server started at port {port}"
-    logger.info(msg)
-    click.echo(msg)
+    log_print(f"Proxy server started and listening on port {port} ...", fg='green', underline=True)
     start_client(url)
 
 
 def _run():
     _cli()
+
+
+def _test():
+    log_print("hello", "world")                  # hello world
+    log_print("hello", "world", fg='green')      # hello world
+    log_print("hello %s", "world")               # hello world
+    log_print("hello %s", 123)                   # hello 123
+    log_print("hello {}", "world")               # hello world
+    log_print("hello {w}", w="world")            # hello world
+    log_print("hello world {v}", "world", v=123)  # hello world world 123
+
+
+if __name__ == '__main__':
+    _test()
