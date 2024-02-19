@@ -275,10 +275,10 @@ class ProxyChannelHandler(ChannelHandlerAdapter):
             self._tunnel._send_frame(data_frame)
 
     def channel_active(self, ctx):
-        log_print(f"[channel_active] {ctx.channel()}", fg='green')
+        log_print(f"[channel_active] {ctx.channel()}", fg='green', level=logging.DEBUG)
 
     def channel_inactive(self, ctx):
-        log_print(f"[channel_inactive] {ctx.channel()}", fg='bright_black')
+        log_print(f"[channel_inactive] {ctx.channel()}", fg='bright_black', level=logging.DEBUG)
         if self._session_id:
             self._tunnel.send_termination_request(self._session_id)
 
