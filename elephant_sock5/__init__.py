@@ -29,6 +29,9 @@ _trace_data = False
 _session_request_timeout = 3
 _no_color = False
 
+_proxy_ip = None
+_proxy_port = None
+
 tunnels = None                  # cycle
 _counter = count(start=0, step=1)
 
@@ -80,7 +83,7 @@ class Tunnel:
         )
 
         # ws.run_forever(dispatcher=rel, reconnect=5)
-        log_print(f"Starting Tunnel (URL: {self.url}) ...", underline=True)
+        log_print(f"Starting Tunnel#{self._count} (URL: {self.url}) ...", underline=True)
         self._ws.run_forever(reconnect=10, sslopt={"cert_reqs": ssl.CERT_NONE})
         # rel.signal(2, rel.abort)
         # rel.dispatch()
@@ -145,7 +148,10 @@ class Tunnel:
     def send_session_request(self, ctx) -> int:  # return session_id
         """This method is called by the client (Netty thread) to request a new session."""
         assert self._thread is not None and threading.current_thread() != self._thread
-        sr = SessionRequest.sock5()
+        if _proxy_ip and _proxy_port:
+            sr = SessionRequest.of(_proxy_ip, _proxy_port)
+        else:
+            sr = SessionRequest.sock5()
         future = Future()
         self._responseFutures[sr.id] = ('session-request-response', future)
         self._send_frame(sr.to_frame())
@@ -156,7 +162,7 @@ class Tunnel:
 
     @sneaky()
     def _on_open(self, ws):
-        log_print(f"[on_open] Opened connection {socket_description(ws.sock.sock)}", fg='bright_blue')
+        log_print(f"[on_open] Opened connection#{self._count} {socket_description(ws.sock.sock)}", fg='bright_blue')
         self._localport = ws.sock.sock.getsockname()[1]
         self._thread = threading.current_thread()
         self._ws = ws
@@ -184,12 +190,12 @@ class Tunnel:
 
     def _on_error(self, ws, error):
         if error and str(error):
-            log_print(f"[on_error] {error}", fg='red')
+            log_print(f"[on_error] {error}", fg='red', level=logging.ERROR)
 
     def _trace(self, frame: Frame, send=True, method: str = None):
         if _quiet:
             return
-        tunnel_identifier = f"{self._count}:{self._localport}"
+        tunnel_identifier = f"#{self._count}:{self._localport}".center(10)
         direction = '>>>' if send else '<<<'
         fg = 'yellow' if not send else None
         now = f"{str(datetime.now()):<20}"
@@ -215,7 +221,7 @@ class Tunnel:
             if isinstance(msg0, dict):
                 msg0 = json.dumps(msg0)
 
-            msg = f"{now} | {tunnel_identifier:7} | {self._count}:{self._localport:5} | {direction} | {method:<25} | {jrpc_id} | {msg0}"
+            msg = f"{now} | {tunnel_identifier} | {direction} | {method:<25} | {jrpc_id} | {msg0}"
 
             current_total = None
             if method == 'session-request-response':
@@ -233,14 +239,14 @@ class Tunnel:
             if not _trace_data:
                 return
             session_id = frame.session_id
-            msg = f"{now} | {tunnel_identifier:7} | {direction} | [{'OP_DATA: ' + str(session_id):<25}] <<{len(frame.payload)} bytes>>"
+            msg = f"{now} | {tunnel_identifier} | {direction} | [{'OP_DATA: ' + str(session_id):<25}] <<{len(frame.payload)} bytes>>"
             ctx = self._clients.get(session_id)
             if ctx:
                 msg += f" {ctx.channel()}"
             if not send and not ctx:
                 fg = 'red'
         else:
-            msg = f"{now} | {tunnel_identifier:7} | {direction} | Are you kidding me?"
+            msg = f"{now} | {tunnel_identifier} | {direction} | Are you kidding me?"
 
         log_print(msg, fg=fg, level=logging.DEBUG)
 
@@ -253,6 +259,7 @@ class ProxyChannelHandler(ChannelHandlerAdapter):
 
     def exception_caught(self, ctx, exception):
         logger.error("[Exception Caught] %s : %s", ctx.channel(), str(exception), exc_info=exception)
+        secho(str(exception), ctx.channel(), fg='red')
         ctx.close()
 
     def channel_read(self, ctx, bytebuf):
@@ -304,12 +311,21 @@ def _config_logging():
 @click.option('--no-color', is_flag=True, help="Disable color output")
 @click.option('--verbose', '-v', 'verbose', is_flag=True, help="Verbose mode")
 @click.option('--tunnels', '-n', 'tunnel_count', default=1, help="Number of tunnels to achieve load balance", show_default=True, type=click.IntRange(1, 8, clamp=True))
+@click.option('--proxy-ip', help="Proxy IP", type=str)
+@click.option('--proxy-port', help="Proxy port", type=int, default=-1, show_default=True)
 @click.version_option(version=__version__, prog_name="Elephant SOCK5 Client")
-def _cli(port, url, quiet, save_log, session_request_timeout, no_color, verbose, tunnel_count):
+def _cli(port, url, quiet, save_log, session_request_timeout, no_color, verbose, tunnel_count, proxy_ip, proxy_port):
     global _quiet
     global _session_request_timeout
     global _no_color
     global tunnels
+    global _proxy_ip
+    global _proxy_port
+
+    if proxy_ip:
+        _proxy_ip = proxy_ip
+        assert 0 < proxy_port < 65536, "Invalid proxy port"
+        _proxy_port = proxy_port
 
     _no_color = no_color
     _session_request_timeout = session_request_timeout
