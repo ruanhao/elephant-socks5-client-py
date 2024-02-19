@@ -259,7 +259,7 @@ class ProxyChannelHandler(ChannelHandlerAdapter):
 
     def exception_caught(self, ctx, exception):
         logger.error("[Exception Caught] %s : %s", ctx.channel(), str(exception), exc_info=exception)
-        secho(str(exception), ctx.channel(), fg='red')
+        click.secho(f"[Exception Caught] {ctx.channel()} : {str(exception)}", fg='red')
         ctx.close()
 
     def channel_read(self, ctx, bytebuf):
