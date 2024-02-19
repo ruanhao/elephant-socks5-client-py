@@ -95,7 +95,8 @@ def _trace(frame: Frame, send=True, method: str = None):
         if current_total is not None:
             msg += f" | sessions: {current_total}"
         if logger.isEnabledFor(logging.DEBUG):
-            msg += f" | futures: {len(responseFuture) - 1}"
+
+            msg += f" | futures: {max(len(responseFuture) - 1, 0)}"
 
     elif frame.op_type == OP_DATA:
         if not _trace_data:
@@ -135,7 +136,7 @@ def handle_frame(ws, frame_bytes):
             if session_id in clients:
                 ctx = clients[session_id]
                 ctx.close()
-                del clients[session_id]
+                # del clients[session_id] # don't remove it here, clients will be removed in channel_inactive
         elif method == 'session-request-response':
             future.set_result(jrpc)
         elif method == 'agent-hello-ack':
@@ -165,13 +166,19 @@ def on_error(ws, error):
 
 
 def _send_frame(frame: Frame, method: str = None) -> None:
-    global tunnel
     if not tunnel:
-        raise Exception("Tunnel is not ready (None))")
+        raise Exception("Tunnel is not ready (Connecting))")
     if not tunnel.sock:
-        raise Exception("Tunnel is not ready (No socket)")
-    if tunnel.sock.fileno() < 0:
-        raise Exception("Tunnel is not active")
+        raise Exception("Tunnel is not ready (Reconnecting)")
+
+    fd = 1 << 16
+    try:
+        fd = tunnel.sock.fileno()
+    except Exception:
+        raise Exception("Tunnel is not ready (Disconnected)")
+    if fd < 0:
+        raise Exception("Tunnel is down")
+
     _trace(frame, True, method)
     tunnel.send(frame.to_bytes(), ABNF.OPCODE_BINARY)
 
