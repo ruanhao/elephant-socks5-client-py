@@ -138,12 +138,15 @@ class Tunnel:
                 ctx = self._clients[session_id]
                 ctx.write(payload)
 
+    def remove_session(self, session_id: int) -> None:
+        if session_id in self._clients:
+            del self._clients[session_id]
+
     def send_termination_request(self, session_id: int) -> None:
         assert self._thread is not None and threading.current_thread() != self._thread
         tr = TerminationRequest.of(session_id)
         self._responseFutures[tr.id] = ('termination-response', Future())
         self._send_frame(tr.to_frame())
-        del self._clients[session_id]
 
     def send_session_request(self, ctx) -> int:  # return session_id
         """This method is called by the client (Netty thread) to request a new session."""
@@ -172,8 +175,8 @@ class Tunnel:
             log_print(f"Closing {clients_count} stale connections ...", fg='magenta')
         for ctx in self._clients.values():
             ctx.close()
-        self._responseFutures.clear()
-        self._clients.clear()
+        self._responseFutures = {}
+        self._clients = {}
 
         obj = Hello()
         self._responseFutures[obj.id] = ('agent-hello-ack', Future())
@@ -265,6 +268,10 @@ class ProxyChannelHandler(ChannelHandlerAdapter):
     def channel_read(self, ctx, bytebuf):
         if not self._session_id:
             self._session_id = self._tunnel.send_session_request(ctx)
+            if self._session_id < 0:
+                log_print(f"Failed to establish session with {ctx.channel()}", fg='red', level=logging.ERROR)
+                ctx.close()
+                return
 
         for sub_bytebuf in chunk_list(bytebuf, 1024):
             data_frame = Frame(
@@ -280,7 +287,10 @@ class ProxyChannelHandler(ChannelHandlerAdapter):
     def channel_inactive(self, ctx):
         log_print(f"[channel_inactive] {ctx.channel()}", fg='bright_black', level=logging.DEBUG)
         if self._session_id:
-            self._tunnel.send_termination_request(self._session_id)
+            try:
+                self._tunnel.send_termination_request(self._session_id)
+            finally:
+                self._tunnel.remove_session(self._session_id)
 
 
 def _config_logging():
