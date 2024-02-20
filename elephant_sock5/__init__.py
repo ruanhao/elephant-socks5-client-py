@@ -24,6 +24,7 @@ URL = "ws[s]://localhost:4443/elephant/ws"
 
 decoder = LengthFieldBasedFrameDecoder()
 
+_enable_reverse_proxy = False
 _quiet = False
 _trace_data = False
 _session_request_timeout = 3
@@ -137,6 +138,10 @@ class Tunnel:
             elif method == 'agent-hello-ack':
                 pass
             elif method == 'session-request':
+                if not _enable_reverse_proxy:
+                    self._send_frame(JRPCResponse.of(jrpc_id, error={
+                        'reason': "reverse proxy is not enabled"
+                    }).to_frame(), 'session-request-response')
                 ip = jrpc['params']['ip']
                 port = jrpc['params']['port']
                 session_id = jrpc['params']['session-id']
@@ -193,7 +198,10 @@ class Tunnel:
         future = Future()
         self._responseFutures[sr.id] = ('session-request-response', future)
         self._send_frame(sr.to_frame())
-        jrpc = future.result(_session_request_timeout)  # wait for response
+        try:
+            jrpc = future.result(_session_request_timeout)  # wait for response
+        except TimeoutError:
+            raise Exception(f"Session request timeout ({_session_request_timeout} seconds)")
         session_id = jrpc['result']['session-id']
         self._clients[session_id] = ctx
         return session_id
@@ -265,12 +273,14 @@ class Tunnel:
             msg = f"{now} | {tunnel_identifier} | {direction} | {method:<25} | {jrpc_id}"
 
             current_total = None
-            if method == 'session-request-response':
-                current_total = (len(self._clients) + 1) if not send else len(self._clients)
-            elif method == 'termination-request':
-                current_total = len(self._clients) - 1
-            elif method == 'termination-response':
+            if method == 'session-request':
                 current_total = len(self._clients)
+            if method == 'session-request-response':
+                current_total = len(self._clients) + 1
+            elif method == 'termination-request':
+                current_total = (len(self._clients) - 1) if send else len(self._clients)
+            elif method == 'termination-response':
+                current_total = len(self._clients) if not send else (len(self._clients) - 1)
             if current_total is not None:
                 msg += f" | sessions: {current_total}"
             if logger.isEnabledFor(logging.DEBUG):
@@ -386,6 +396,7 @@ def _config_logging():
 @click.option('--global', '-g', 'global_', is_flag=True, help="Listen on all interfaces")
 @click.option('--server', '-s', 'url', help=f"Elephant tunnel server URL (like: {URL})", type=str, required=True)
 @click.option('--quiet', '-q', is_flag=True, help="Quiet mode")
+@click.option('--enable-reverse-proxy', '-r', 'enable_reverse_proxy', is_flag=True, help="Enable reverse proxy")
 @click.option('--log-record', '-l', 'save_log', is_flag=True, help="Save log to file (elephant-client.log)")
 @click.option('--request-timeout', '-t', 'session_request_timeout', default=3, help="Session request timeout (seconds)", show_default=True, type=int)
 @click.option('--no-color', is_flag=True, help="Disable color output")
@@ -394,13 +405,14 @@ def _config_logging():
 @click.option('--proxy-ip', help="Proxy IP", type=str)
 @click.option('--proxy-port', help="Proxy port", type=int, default=-1, show_default=True)
 @click.version_option(version=__version__, prog_name="Elephant SOCK5 Client")
-def _cli(port, url, quiet, save_log, session_request_timeout, no_color, verbose, tunnel_count, proxy_ip, proxy_port, global_):
+def _cli(port, url, quiet, save_log, session_request_timeout, no_color, verbose, tunnel_count, proxy_ip, proxy_port, global_, enable_reverse_proxy):
     global _quiet
     global _session_request_timeout
     global _no_color
     global tunnels
     global _proxy_ip
     global _proxy_port
+    global _enable_reverse_proxy
 
     if proxy_ip:
         _proxy_ip = proxy_ip
@@ -409,6 +421,7 @@ def _cli(port, url, quiet, save_log, session_request_timeout, no_color, verbose,
 
     _no_color = no_color
     _session_request_timeout = session_request_timeout
+    _enable_reverse_proxy = enable_reverse_proxy
 
     if save_log:
         _config_logging()
