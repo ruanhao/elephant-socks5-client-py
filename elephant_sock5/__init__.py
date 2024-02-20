@@ -13,7 +13,7 @@ from elephant_sock5.version import __version__
 from click import secho
 import json
 import string
-from py_netty import ServerBootstrap, ChannelHandlerAdapter, EventLoopGroup
+from py_netty import Bootstrap, ServerBootstrap, ChannelHandlerAdapter, EventLoopGroup
 from attrs import define, field
 from itertools import cycle, count
 
@@ -34,6 +34,9 @@ _proxy_port = None
 
 tunnels = None                  # cycle
 _counter = count(start=0, step=1)
+
+ACCEPTOR = EventLoopGroup(1, 'Acceptor')
+WORKER = EventLoopGroup(1, 'Worker')
 
 
 def log_print(msg, *args, fg=None, underline=None, level=logging.INFO, **kwargs):
@@ -120,6 +123,8 @@ class Tunnel:
 
             if method == 'echo-request':
                 self._send_frame(JRPCResponse.of(jrpc_id).to_frame(), 'echo-response')
+            elif method == 'termination-response':
+                pass
             elif method == 'termination-request':
                 self._send_frame(JRPCResponse.of(jrpc_id).to_frame(), 'termination-response')
                 session_id = jrpc['params']['session-id']
@@ -131,6 +136,19 @@ class Tunnel:
                 future.set_result(jrpc)
             elif method == 'agent-hello-ack':
                 pass
+            elif method == 'session-request':
+                ip = jrpc['params']['ip']
+                port = jrpc['params']['port']
+                session_id = jrpc['params']['session-id']
+                ok = self._create_reverse_proxy(session_id, ip, port)
+                if ok:
+                    self._send_frame(JRPCResponse.of(jrpc_id).to_frame(), 'session-request-response')
+                else:
+                    self._send_frame(JRPCResponse.of(jrpc_id, error={
+                        'reason': f"fail to connect {ip}:{port}/session:{session_id}"
+                    }).to_frame(), 'session-request-response')
+            else:
+                log_print(f"Unknown method: {method}", fg='red')
         elif frame.op_type == OP_DATA:
             session_id = frame.session_id
             payload = frame.payload
@@ -138,12 +156,30 @@ class Tunnel:
                 ctx = self._clients[session_id]
                 ctx.write(payload)
 
+    def _create_reverse_proxy(self, session_id: int, ip: str, port: int) -> bool:
+        try:
+            b = Bootstrap(
+                eventloop_group=WORKER,
+                handler_initializer=lambda: ReverseProxyChannelHandler(self, session_id)
+            )
+            channel = b.connect(ip, port).sync().channel()
+            if not channel.is_active():
+                log_print(f"[Reverse]Failed to connect to {ip}:{port}", fg='red', level=logging.ERROR)
+                return False
+        except Exception as e:
+            log_print(f"[Reverse]Failed to connect to {ip}:{port} ({e})", fg='red', level=logging.ERROR)
+            return False
+        self._clients[session_id] = channel.context()
+        return True
+
     def remove_session(self, session_id: int) -> None:
         if session_id in self._clients:
             del self._clients[session_id]
 
     def send_termination_request(self, session_id: int) -> None:
         assert self._thread is not None and threading.current_thread() != self._thread
+        if session_id not in self._clients:
+            return
         tr = TerminationRequest.of(session_id)
         self._responseFutures[tr.id] = ('termination-response', Future())
         self._send_frame(tr.to_frame())
@@ -215,7 +251,10 @@ class Tunnel:
             if 'hello' in method:
                 msg0 = jrpc.get('jrpc', jrpc.get('jsonrpc', "???"))
             elif 'response' in method:
-                msg0 = jrpc.get('result', jrpc)
+                e = jrpc.get('error')
+                msg0 = e or jrpc.get('result')
+                if e:
+                    fg = 'red'
             elif 'request' in method:
                 msg0 = jrpc.get('params', jrpc)
             else:
@@ -228,7 +267,7 @@ class Tunnel:
 
             current_total = None
             if method == 'session-request-response':
-                current_total = len(self._clients) + 1
+                current_total = (len(self._clients) + 1) if not send else len(self._clients)
             elif method == 'termination-request':
                 current_total = len(self._clients) - 1
             elif method == 'termination-response':
@@ -252,6 +291,37 @@ class Tunnel:
             msg = f"{now} | {tunnel_identifier} | {direction} | Are you kidding me?"
 
         log_print(msg, fg=fg, level=logging.DEBUG)
+
+
+class ReverseProxyChannelHandler(ChannelHandlerAdapter):
+
+    def __init__(self, tunnel: Tunnel, session_id: int):
+        self._session_id = session_id
+        self._tunnel = tunnel
+
+    def exception_caught(self, ctx, exception):
+        logger.error("[Reverse][Exception Caught] %s : %s", ctx.channel(), str(exception), exc_info=exception)
+        click.secho(f"[Reverse][Exception Caught] {ctx.channel()} : {str(exception)}", fg='red')
+        ctx.close()
+
+    def channel_active(self, ctx):
+        log_print(f"[Reverse][channel_active] {ctx.channel()}", fg='green', level=logging.DEBUG)
+
+    def channel_read(self, ctx, bytebuf):
+        for sub_bytebuf in chunk_list(bytebuf, 1024):
+            data_frame = Frame(
+                op_type=OP_DATA,
+                session_id=self._session_id,
+                payload=sub_bytebuf,
+            )
+            self._tunnel._send_frame(data_frame)
+
+    def channel_inactive(self, ctx):
+        log_print(f"[Reverse][channel_inactive] {ctx.channel()}", fg='bright_black', level=logging.DEBUG)
+        try:
+            self._tunnel.send_termination_request(self._session_id)
+        finally:
+            self._tunnel.remove_session(self._session_id)
 
 
 class ProxyChannelHandler(ChannelHandlerAdapter):
@@ -369,8 +439,8 @@ def _cli(port, url, quiet, save_log, session_request_timeout, no_color, verbose,
 
     log_print(f"Proxy server started and listening on port {port} ...", fg='green', underline=True)
     sb = ServerBootstrap(
-        parant_group=EventLoopGroup(1, 'Acceptor'),
-        child_group=EventLoopGroup(1, 'Worker'),
+        parant_group=ACCEPTOR,
+        child_group=WORKER,
         child_handler_initializer=ProxyChannelHandler
     )
 

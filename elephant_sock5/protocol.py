@@ -2,6 +2,7 @@ import struct
 import uuid
 import json
 from attrs import define, field, asdict
+from typing import Dict
 
 
 # |---+---+---+---+---+---+---+---+---+---+----+----+----+----+----+----|
@@ -55,12 +56,14 @@ class EchoRequest(JRPC):
 class JRPCResponse(JRPC):
 
     method: str = field(default=None)
+    error: Dict = field(default=None)
 
     @classmethod
-    def of(cls, id, method=None):
+    def of(cls, id, method: str = None, error: Dict = None):
         r = cls()
         r.id = id
         r.method = method
+        r.error = error
         return r
 
 
