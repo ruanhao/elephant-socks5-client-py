@@ -131,7 +131,7 @@ class Tunnel:
                 if session_id in self._clients:
                     ctx = self._clients[session_id]
                     ctx.close()
-                    # del clients[session_id] # don't remove it here, clients will be removed in channel_inactive
+                    self.remove_session(session_id)
             elif method == 'session-request-response':
                 future.set_result(jrpc)
             elif method == 'agent-hello-ack':
@@ -173,8 +173,7 @@ class Tunnel:
         return True
 
     def remove_session(self, session_id: int) -> None:
-        if session_id in self._clients:
-            del self._clients[session_id]
+        self._clients.pop(session_id, None)
 
     def send_termination_request(self, session_id: int) -> None:
         assert self._thread is not None and threading.current_thread() != self._thread
@@ -263,7 +262,7 @@ class Tunnel:
             if isinstance(msg0, dict):
                 msg0 = json.dumps(msg0)
 
-            msg = f"{now} | {tunnel_identifier} | {direction} | {method:<25} | {jrpc_id} | {msg0}"
+            msg = f"{now} | {tunnel_identifier} | {direction} | {method:<25} | {jrpc_id}"
 
             current_total = None
             if method == 'session-request-response':
@@ -276,7 +275,7 @@ class Tunnel:
                 msg += f" | sessions: {current_total}"
             if logger.isEnabledFor(logging.DEBUG):
                 msg += f" | futures: {max(len(self._responseFutures) - 1, 0)}"
-
+            msg += f" | {msg0}"
         elif frame.op_type == OP_DATA:
             if not _trace_data:
                 return
