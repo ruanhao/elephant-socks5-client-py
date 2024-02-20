@@ -304,6 +304,7 @@ def _config_logging():
 
 @click.command(short_help="Elephant SOCK5 client", context_settings=dict(help_option_names=['-h', '--help'], max_content_width=120))
 @click.option('--port', '-p', default=1080, help="Local port to bind", show_default=True, type=int)
+@click.option('--global', '-g', 'global_', is_flag=True, help="Listen on all interfaces")
 @click.option('--server', '-s', 'url', help=f"Elephant tunnel server URL (like: {URL})", type=str, required=True)
 @click.option('--quiet', '-q', is_flag=True, help="Quiet mode")
 @click.option('--log-record', '-l', 'save_log', is_flag=True, help="Save log to file (elephant-client.log)")
@@ -314,7 +315,7 @@ def _config_logging():
 @click.option('--proxy-ip', help="Proxy IP", type=str)
 @click.option('--proxy-port', help="Proxy port", type=int, default=-1, show_default=True)
 @click.version_option(version=__version__, prog_name="Elephant SOCK5 Client")
-def _cli(port, url, quiet, save_log, session_request_timeout, no_color, verbose, tunnel_count, proxy_ip, proxy_port):
+def _cli(port, url, quiet, save_log, session_request_timeout, no_color, verbose, tunnel_count, proxy_ip, proxy_port, global_):
     global _quiet
     global _session_request_timeout
     global _no_color
@@ -362,7 +363,8 @@ def _cli(port, url, quiet, save_log, session_request_timeout, no_color, verbose,
         child_group=EventLoopGroup(1, 'Worker'),
         child_handler_initializer=ProxyChannelHandler
     )
-    sb.bind(port=port).close_future().sync()
+
+    sb.bind(address='0.0.0.0' if global_ else '127.0.0.1', port=port).close_future().sync()
 
 
 def _run():
