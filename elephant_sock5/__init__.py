@@ -8,7 +8,7 @@ import websocket
 from concurrent.futures import Future, TimeoutError
 from websocket._abnf import ABNF
 from elephant_sock5.protocol import bytes_to_frame, OP_CONTROL, OP_DATA, JRPCResponse, SessionRequest, Hello, Frame, TerminationRequest
-from elephant_sock5.utils import LengthFieldBasedFrameDecoder, chunk_list, sneaky, socket_description, has_format_placeholders
+from elephant_sock5.utils import LengthFieldBasedFrameDecoder, chunk_list, sneaky, socket_description, has_format_placeholders, parse_uri
 from elephant_sock5.version import __version__
 from click import secho
 import json
@@ -16,6 +16,7 @@ import string
 from py_netty import Bootstrap, ServerBootstrap, ChannelHandlerAdapter, EventLoopGroup
 from attrs import define, field
 from itertools import cycle, count
+from urllib.parse import quote
 
 
 logger = logging.getLogger("elephant-sock5")
@@ -127,12 +128,14 @@ class Tunnel:
             elif method == 'termination-response':
                 pass
             elif method == 'termination-request':
-                self._send_frame(JRPCResponse.of(jrpc_id).to_frame(), 'termination-response')
-                session_id = jrpc['params']['session-id']
-                if session_id in self._clients:
-                    ctx = self._clients[session_id]
-                    ctx.close()
-                    self.remove_session(session_id)
+                try:
+                    session_id = jrpc['params']['session-id']
+                    if session_id in self._clients:
+                        ctx = self._clients[session_id]
+                        ctx.close()
+                        self.remove_session(session_id)
+                finally:
+                    self._send_frame(JRPCResponse.of(jrpc_id).to_frame(), 'termination-response')
             elif method == 'session-request-response':
                 future.set_result(jrpc)
             elif method == 'agent-hello-ack':
@@ -270,21 +273,14 @@ class Tunnel:
             if isinstance(msg0, dict):
                 msg0 = json.dumps(msg0)
 
-            msg = f"{now} | {tunnel_identifier} | {direction} | {method:<25} | {jrpc_id}"
+            session_count = len(self._clients)
+            if method == 'session-request-response' and not send:
+                session_count += 1
 
-            current_total = None
-            if method == 'session-request':
-                current_total = len(self._clients)
-            if method == 'session-request-response':
-                current_total = len(self._clients) + 1
-            elif method == 'termination-request':
-                current_total = (len(self._clients) - 1) if send else len(self._clients)
-            elif method == 'termination-response':
-                current_total = len(self._clients) if not send else (len(self._clients) - 1)
-            if current_total is not None:
-                msg += f" | sessions: {current_total}"
+            msg = f"{now} | {tunnel_identifier} | {direction} | {method:<25} | {jrpc_id} | sessions: {session_count}"
+
             if logger.isEnabledFor(logging.DEBUG):
-                msg += f" | futures: {max(len(self._responseFutures) - 1, 0)}"
+                msg += f" | futures: {len(self._responseFutures)}"
             msg += f" | {msg0}"
         elif frame.op_type == OP_DATA:
             if not _trace_data:
@@ -327,10 +323,8 @@ class ReverseProxyChannelHandler(ChannelHandlerAdapter):
 
     def channel_inactive(self, ctx):
         log_print(f"[Reverse][channel_inactive] {ctx.channel()}", fg='bright_black', level=logging.DEBUG)
-        try:
-            self._tunnel.send_termination_request(self._session_id)
-        finally:
-            self._tunnel.remove_session(self._session_id)
+        self._tunnel.remove_session(self._session_id)
+        self._tunnel.send_termination_request(self._session_id)
 
 
 class ProxyChannelHandler(ChannelHandlerAdapter):
@@ -345,6 +339,9 @@ class ProxyChannelHandler(ChannelHandlerAdapter):
         ctx.close()
 
     def channel_read(self, ctx, bytebuf):
+        if not self._session_id:
+            ctx.close()         # failed to get seesion_id and there is incoming data here
+            return
         for sub_bytebuf in chunk_list(bytebuf, 1024):
             data_frame = Frame(
                 op_type=OP_DATA,
@@ -393,8 +390,12 @@ def _config_logging():
 @click.option('--port', '-p', default=1080, help="Local port to bind", show_default=True, type=int)
 @click.option('--global', '-g', 'global_', is_flag=True, help="Listen on all interfaces")
 @click.option('--server', '-s', 'url', help=f"Elephant tunnel server URL (like: {URL})", type=str, required=True)
+@click.option('--alias', '-a', help="Alias for the client", type=str)
 @click.option('--quiet', '-q', is_flag=True, help="Quiet mode")
 @click.option('--enable-reverse-proxy', '-r', 'enable_reverse_proxy', is_flag=True, help="Enable reverse proxy")
+@click.option('--reverse-ip', help="Reverse proxy IP", type=str)
+@click.option('--reverse-port', help="Reverse proxy port", type=int, default=-1, show_default=True)
+@click.option('--reverse-global', 'reverse_global', is_flag=True, help="Reverse proxy listen on all interfaces")
 @click.option('--log-record', '-l', 'save_log', is_flag=True, help="Save log to file (elephant-client.log)")
 @click.option('--request-timeout', '-t', 'session_request_timeout', default=3, help="Session request timeout (seconds)", show_default=True, type=int)
 @click.option('--no-color', is_flag=True, help="Disable color output")
@@ -403,7 +404,13 @@ def _config_logging():
 @click.option('--proxy-ip', help="Proxy IP", type=str)
 @click.option('--proxy-port', help="Proxy port", type=int, default=-1, show_default=True)
 @click.version_option(version=__version__, prog_name="Elephant SOCK5 Client")
-def _cli(port, url, quiet, save_log, session_request_timeout, no_color, verbose, tunnel_count, proxy_ip, proxy_port, global_, enable_reverse_proxy):
+def _cli(
+        port, url, alias, tunnel_count,
+        quiet, save_log, session_request_timeout, no_color,
+        proxy_ip, proxy_port, global_,
+        enable_reverse_proxy, reverse_ip, reverse_port, reverse_global,
+        verbose
+):
     global _quiet
     global _session_request_timeout
     global _no_color
@@ -419,7 +426,19 @@ def _cli(port, url, quiet, save_log, session_request_timeout, no_color, verbose,
 
     _no_color = no_color
     _session_request_timeout = session_request_timeout
-    _enable_reverse_proxy = enable_reverse_proxy
+    _enable_reverse_proxy = enable_reverse_proxy or (reverse_ip and reverse_port > 0)
+
+    # normalize url
+    base_url = url.split("?")[0]
+    params = parse_uri(url)
+    if alias:
+        params['alias'] = [alias]
+    if reverse_ip and reverse_port > 0:
+        params['reverseHost'] = [reverse_ip]
+        params['reversePort'] = [reverse_port]
+        params['reverseGlobal'] = [reverse_global]
+    url = base_url + "?" + '&'.join([f"{k}={','.join(map(str, v))}" for k, v in params.items()])
+    url = quote(url, safe=':/?&=')
 
     if save_log:
         _config_logging()

@@ -6,6 +6,7 @@ import sys
 from functools import wraps
 import inspect
 import logging
+from urllib.parse import urlparse, parse_qs
 
 
 _logger = logging.getLogger(__name__)
@@ -108,6 +109,16 @@ def has_format_placeholders(s):
     return bool(re.search(pattern, s))
 
 
+def parse_uri(uri):
+    # Parse the URI
+    parsed_uri = urlparse(uri)
+
+    # Extract parameters from the query string
+    params = parse_qs(parsed_uri.query)
+
+    return params
+
+
 if __name__ == '__main__':
     from elephant_sock5.protocol import SessionRequest, jrpc_to_bytes, bytes_to_frame
 
@@ -150,3 +161,18 @@ if __name__ == '__main__':
     assert len(messages) == 99
     messages = decoder.decode((frame_data * 100)[-1:])
     assert len(messages) == 1
+
+    example_uri = "wss://localhost:4443/elephant/ws?alias=test"
+    uri_params = parse_uri(example_uri)
+    print(uri_params)
+    print('&'.join([f"{k}={','.join(v)}" for k, v in uri_params.items()]))
+
+    example_uri = "wss://localhost:4443/elephant/ws?alias=test&alias=test2"
+    uri_params = parse_uri(example_uri)
+    print(uri_params)
+    print('&'.join([f"{k}={','.join(v)}" for k, v in uri_params.items()]))
+
+    example_uri = "wss://localhost:4443/elephant/ws"
+    uri_params = parse_uri(example_uri)
+    print(uri_params)
+    print('&'.join([f"{k}={','.join(v)}" for k, v in uri_params.items()]))
