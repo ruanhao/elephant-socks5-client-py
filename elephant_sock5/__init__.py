@@ -5,7 +5,7 @@ import threading
 import ssl
 import logging
 import websocket
-from concurrent.futures import Future
+from concurrent.futures import Future, TimeoutError
 from websocket._abnf import ABNF
 from elephant_sock5.protocol import bytes_to_frame, OP_CONTROL, OP_DATA, JRPCResponse, SessionRequest, Hello, Frame, TerminationRequest
 from elephant_sock5.utils import LengthFieldBasedFrameDecoder, chunk_list, sneaky, socket_description, has_format_placeholders
@@ -345,13 +345,6 @@ class ProxyChannelHandler(ChannelHandlerAdapter):
         ctx.close()
 
     def channel_read(self, ctx, bytebuf):
-        if not self._session_id:
-            self._session_id = self._tunnel.send_session_request(ctx)
-            if self._session_id < 0:
-                log_print(f"Failed to establish session with {ctx.channel()}", fg='red', level=logging.ERROR)
-                ctx.close()
-                return
-
         for sub_bytebuf in chunk_list(bytebuf, 1024):
             data_frame = Frame(
                 op_type=OP_DATA,
@@ -362,6 +355,11 @@ class ProxyChannelHandler(ChannelHandlerAdapter):
 
     def channel_active(self, ctx):
         log_print(f"[channel_active] {ctx.channel()}", fg='green', level=logging.DEBUG)
+        self._session_id = self._tunnel.send_session_request(ctx)
+        if self._session_id < 0:
+            log_print(f"Failed to establish session with {ctx.channel()}", fg='red', level=logging.ERROR)
+            ctx.close()
+            return
 
     def channel_inactive(self, ctx):
         log_print(f"[channel_inactive] {ctx.channel()}", fg='bright_black', level=logging.DEBUG)
