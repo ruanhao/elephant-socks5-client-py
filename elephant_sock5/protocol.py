@@ -161,30 +161,3 @@ def hello(jrpc_obj=None) -> bytes:
         assert jrpc_obj.method == 'agent-hello'
 
     return jrpc_obj.to_frame_bytes()
-
-
-if __name__ == '__main__':
-    # print(hello())
-    h = Hello()
-    print(h)
-    print(h.to_frame_bytes())
-
-    format = '>BBHH'
-    size = struct.calcsize(format)
-    print(size)
-    assert size == 6
-
-    tr = TerminationRequest.of(123)
-    print(tr)
-    print(tr.to_frame_bytes())
-
-    sr = SessionRequest.of('127.0.0.1', 1234)
-    print(sr)
-    print(sr.to_frame_bytes())
-
-    f = Frame(
-        session_id=123,
-        payload=b'hello'
-    )
-    print(f)
-    print(f.to_bytes())

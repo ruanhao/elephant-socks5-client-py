@@ -8,7 +8,7 @@ import websocket
 from concurrent.futures import Future, TimeoutError
 from websocket._abnf import ABNF
 from elephant_sock5.protocol import bytes_to_frame, OP_CONTROL, OP_DATA, JRPCResponse, SessionRequest, Hello, Frame, TerminationRequest
-from elephant_sock5.utils import LengthFieldBasedFrameDecoder, chunk_list, sneaky, socket_description, has_format_placeholders, parse_uri
+from elephant_sock5.utils import LengthFieldBasedFrameDecoder, chunk_list, sneaky, socket_description, has_format_placeholders
 from elephant_sock5.version import __version__
 from click import secho
 import json
@@ -16,8 +16,6 @@ import string
 from py_netty import Bootstrap, ServerBootstrap, ChannelHandlerAdapter, EventLoopGroup
 from attrs import define, field
 from itertools import cycle, count
-from urllib.parse import quote
-
 
 logger = logging.getLogger("elephant-sock5")
 
@@ -265,7 +263,7 @@ class Tunnel:
                     method = '??????'
 
             if 'agent-hello' == method:
-                msg0 = jrpc.get('jrpc', jrpc.get('jsonrpc', "???"))
+                msg0 = jrpc.get('params')
             elif 'agent-hello-ack' == method:
                 msg0 = jrpc.get('result')
             elif 'response' in method:
@@ -482,17 +480,3 @@ def _cli(
 
 def _run():
     _cli()
-
-
-def _test():
-    log_print("hello", "world")                  # hello world
-    log_print("hello", "world", fg='green')      # hello world
-    log_print("hello %s", "world")               # hello world
-    log_print("hello %s", 123)                   # hello 123
-    log_print("hello {}", "world")               # hello world
-    log_print("hello {w}", w="world")            # hello world
-    log_print("hello world {v}", "world", v=123)  # hello world world 123
-
-
-if __name__ == '__main__':
-    _test()

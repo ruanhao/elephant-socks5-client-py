@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Tuple, Optional
 import traceback
 import os
 import re
@@ -17,20 +17,20 @@ class LengthFieldBasedFrameDecoder:
     def __init__(self, length_field_length=2, length_field_offset=4):
         self.length_field_length = length_field_length
         self.length_field_offset = length_field_offset
-        self.cumulation = b''
+        self.cumulate = b''
 
     def decode(self, data) -> List[bytes]:
-        data = self.cumulation + data
+        data = self.cumulate + data
         result = []
         while True:
             frame, data = self._decode(data)
             if frame is None:
                 break
             result.append(frame)
-        self.cumulation = data
+        self.cumulate = data
         return result
 
-    def _decode(self, data) -> bytes:
+    def _decode(self, data) -> Tuple[Optional[bytes], bytes]:
         if len(data) < self.length_field_offset + self.length_field_length:
             return None, data
 
@@ -53,7 +53,7 @@ def _all_args_repr(args, kw):
         args_repr = [repr(arg) for arg in args]
         kws = [f"{k}={repr(v)}" for k, v in kw.items()]
         return ', '.join(args_repr + kws)
-    except Exception:
+    except (Exception,):
         return "(?)"
 
 
@@ -86,7 +86,7 @@ def sneaky(logger: logging.Logger = None, console: bool = False):
 
 
 def socket_description(sock):
-    '''[id: 0xd829bade, L:/127.0.0.1:2069 - R:/127.0.0.1:55666]'''
+    """[id: 0xd829bade, L:/127.0.0.1:2069 - R:/127.0.0.1:55666]"""
     sock_id = hex(id(sock))
     fileno = sock.fileno()
     s_addr = None
@@ -94,18 +94,15 @@ def socket_description(sock):
         s_addr, s_port = sock.getsockname()[:2]
         d_addr, d_port = sock.getpeername()[:2]
         return f"[id: {sock_id}, fd: {fileno}, L:/{s_addr}:{s_port} - R:/{d_addr}:{d_port}]"
-        pass
-    except Exception:
+    except (Exception,):
         if s_addr:
             return f"[id: {sock_id}, fd: {fileno}, LISTENING]"
         else:
             return f"[id: {sock_id}, fd: {fileno}, CLOSED]"
 
-    return f"{sock.getsockname()} <=> {sock.getpeername()}"
-
 
 def has_format_placeholders(s):
-    pattern = re.compile(r'\{.*\}|\%[sd]')
+    pattern = re.compile(r'{.*}|%[sd]')
     return bool(re.search(pattern, s))
 
 
@@ -117,62 +114,3 @@ def parse_uri(uri):
     params = parse_qs(parsed_uri.query)
 
     return params
-
-
-if __name__ == '__main__':
-    from elephant_sock5.protocol import SessionRequest, jrpc_to_bytes, bytes_to_frame
-
-    decoder = LengthFieldBasedFrameDecoder()
-
-    session_request = SessionRequest.of('117.127.137.147', 50000, 9999)
-    frame_data = jrpc_to_bytes(session_request)
-    print("raw frame_data: ", frame_data)
-    frame0 = bytes_to_frame(frame_data)
-    print("frame0", frame0)
-    assert frame0 is not None
-    assert frame0.session_id == 0
-    assert frame0.op_type == 2
-
-    frame_data_0 = frame_data[:2]
-    frame_data_1 = frame_data[2:6]
-    frame_data_2 = frame_data[6:]
-
-    frame1 = bytes_to_frame(frame_data_0 + frame_data_1 + frame_data_2)
-    assert frame1 is not None
-    assert frame1.session_id == 0
-    assert frame1.op_type == 2
-
-    message = decoder.decode(frame_data_0)
-    assert message == []
-    message = decoder.decode(frame_data_1)
-    assert message == []
-    message = decoder.decode(frame_data_2)
-    assert message
-
-    frame2 = bytes_to_frame(message[0])
-
-    assert frame2 is not None
-    assert frame2.session_id == 0, frame2
-    assert frame2.op_type == 2
-
-    messages = decoder.decode(frame_data * 100)
-    assert len(messages) == 100
-    messages = decoder.decode((frame_data * 100)[:-1])
-    assert len(messages) == 99
-    messages = decoder.decode((frame_data * 100)[-1:])
-    assert len(messages) == 1
-
-    example_uri = "wss://localhost:4443/elephant/ws?alias=test"
-    uri_params = parse_uri(example_uri)
-    print(uri_params)
-    print('&'.join([f"{k}={','.join(v)}" for k, v in uri_params.items()]))
-
-    example_uri = "wss://localhost:4443/elephant/ws?alias=test&alias=test2"
-    uri_params = parse_uri(example_uri)
-    print(uri_params)
-    print('&'.join([f"{k}={','.join(v)}" for k, v in uri_params.items()]))
-
-    example_uri = "wss://localhost:4443/elephant/ws"
-    uri_params = parse_uri(example_uri)
-    print(uri_params)
-    print('&'.join([f"{k}={','.join(v)}" for k, v in uri_params.items()]))
