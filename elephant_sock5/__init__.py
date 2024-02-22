@@ -68,6 +68,7 @@ def log_print(msg, *args, fg=None, underline=None, level=logging.INFO, **kwargs)
 class Tunnel:
 
     url: str = field()
+    hello_params: dict = field(factory=dict)
 
     def __attrs_post_init__(self):
         self._clients = {}      # session_id -> ctx
@@ -76,6 +77,10 @@ class Tunnel:
         self._thread = None     # WebSocket thread
         self._localport = -1
         self._count = next(_counter)
+        self.hello_params.update({
+            'version': __version__,
+            'seq': self._count
+        })
 
     @sneaky()
     def start(self):
@@ -225,6 +230,7 @@ class Tunnel:
         self._clients = {}
 
         obj = Hello()
+        obj.params.update(self.hello_params)
         self._responseFutures[obj.id] = ('agent-hello-ack', Future())
         self._send_frame(obj.to_frame())
 
@@ -235,7 +241,7 @@ class Tunnel:
             self._handle_frame(ws, frame)
 
     def _on_close(self, ws, close_status_code, close_msg):
-        log_print(f"[on_close] Connection closed, status code: {close_status_code}, message: {close_msg}", fg='red')
+        log_print(f"[on_close] Connection closed #{self._count}, status code: {close_status_code}, message: {close_msg}", fg='red')
 
     def _on_error(self, ws, error):
         if error and str(error):
@@ -258,8 +264,10 @@ class Tunnel:
                 else:
                     method = '??????'
 
-            if 'hello' in method:
+            if 'agent-hello' == method:
                 msg0 = jrpc.get('jrpc', jrpc.get('jsonrpc', "???"))
+            elif 'agent-hello-ack' == method:
+                msg0 = jrpc.get('result')
             elif 'response' in method:
                 e = jrpc.get('error')
                 msg0 = e or jrpc.get('result')
@@ -322,7 +330,7 @@ class ReverseProxyChannelHandler(ChannelHandlerAdapter):
             self._tunnel._send_frame(data_frame)
 
     def channel_inactive(self, ctx):
-        log_print(f"[Reverse][channel_inactive] {ctx.channel()}", fg='bright_black', level=logging.DEBUG)
+        log_print(f"[Reverse][channel_inactive #{self._session_id}] {ctx.channel()}", fg='bright_black', level=logging.DEBUG)
         self._tunnel.remove_session(self._session_id)
         self._tunnel.send_termination_request(self._session_id)
 
@@ -359,7 +367,7 @@ class ProxyChannelHandler(ChannelHandlerAdapter):
             return
 
     def channel_inactive(self, ctx):
-        log_print(f"[channel_inactive] {ctx.channel()}", fg='bright_black', level=logging.DEBUG)
+        log_print(f"[channel_inactive #{self._session_id or '???'}] {ctx.channel()}", fg='bright_black', level=logging.DEBUG)
         if self._session_id:
             try:
                 self._tunnel.send_termination_request(self._session_id)
@@ -395,7 +403,7 @@ def _config_logging():
 @click.option('--enable-reverse-proxy', '-r', 'enable_reverse_proxy', is_flag=True, help="Enable reverse proxy")
 @click.option('--reverse-ip', help="Reverse proxy IP", type=str)
 @click.option('--reverse-port', help="Reverse proxy port", type=int, default=-1, show_default=True)
-@click.option('--reverse-global', 'reverse_global', is_flag=True, help="Reverse proxy listen on all interfaces")
+@click.option('--no-reverse-global', 'no_reverse_global', is_flag=True, help="Reverse proxy listen on localhost")
 @click.option('--log-record', '-l', 'save_log', is_flag=True, help="Save log to file (elephant-client.log)")
 @click.option('--request-timeout', '-t', 'session_request_timeout', default=3, help="Session request timeout (seconds)", show_default=True, type=int)
 @click.option('--no-color', is_flag=True, help="Disable color output")
@@ -408,7 +416,7 @@ def _cli(
         port, url, alias, tunnel_count,
         quiet, save_log, session_request_timeout, no_color,
         proxy_ip, proxy_port, global_,
-        enable_reverse_proxy, reverse_ip, reverse_port, reverse_global,
+        enable_reverse_proxy, reverse_ip, reverse_port, no_reverse_global,
         verbose
 ):
     global _quiet
@@ -428,17 +436,13 @@ def _cli(
     _session_request_timeout = session_request_timeout
     _enable_reverse_proxy = enable_reverse_proxy or (reverse_ip and reverse_port > 0)
 
-    # normalize url
-    base_url = url.split("?")[0]
-    params = parse_uri(url)
+    hello_params = {}
     if alias:
-        params['alias'] = [alias]
+        hello_params['alias'] = alias
     if reverse_ip and reverse_port > 0:
-        params['reverseHost'] = [reverse_ip]
-        params['reversePort'] = [reverse_port]
-        params['reverseGlobal'] = [reverse_global]
-    url = base_url + "?" + '&'.join([f"{k}={','.join(map(str, v))}" for k, v in params.items()])
-    url = quote(url, safe=':/?&=')
+        hello_params['reverseHost'] = reverse_ip
+        hello_params['reversePort'] = reverse_port
+        hello_params['reverseGlobal'] = not no_reverse_global
 
     if save_log:
         _config_logging()
@@ -450,7 +454,7 @@ def _cli(
         _quiet = True
         logger.setLevel(logging.ERROR)
 
-    all_tunnels = [Tunnel(url) for _ in range(tunnel_count)]
+    all_tunnels = [Tunnel(url, hello_params.copy()) for _ in range(tunnel_count)]
     for t in all_tunnels:
         wst = threading.Thread(target=t.start)
         wst.daemon = True
