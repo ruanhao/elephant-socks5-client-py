@@ -92,7 +92,7 @@ class Tunnel:
 
         # ws.run_forever(dispatcher=rel, reconnect=5)
         log_print(f"Starting Tunnel#{self._count} (URL: {self.url}) ...", underline=True)
-        self._ws.run_forever(reconnect=10, sslopt={"cert_reqs": ssl.CERT_NONE})
+        self._ws.run_forever(reconnect=10, sslopt={"cert_reqs": ssl.CERT_NONE}, ping_interval=60 * 3, ping_timeout=30)
         # rel.signal(2, rel.abort)
         # rel.dispatch()
 
