@@ -395,7 +395,7 @@ def _config_logging():
 @click.command(short_help="Elephant SOCK5 client", context_settings=dict(help_option_names=['-h', '--help'], max_content_width=120))
 @click.option('--port', '-p', default=1080, help="Local port to bind", show_default=True, type=int)
 @click.option('--global', '-g', 'global_', is_flag=True, help="Listen on all interfaces")
-@click.option('--server', '-s', 'url', help=f"Elephant tunnel server URL (like: {URL})", type=str, required=True)
+@click.option('--server', '-s', 'urls', help=f"Elephant tunnel server URLs (like: {URL})", type=str, required=True)
 @click.option('--alias', '-a', help="Alias for the client", type=str)
 @click.option('--quiet', '-q', is_flag=True, help="Quiet mode")
 @click.option('--enable-reverse-proxy', '-r', 'enable_reverse_proxy', is_flag=True, help="Enable reverse proxy")
@@ -411,7 +411,7 @@ def _config_logging():
 @click.option('--proxy-port', help="Proxy port", type=int, default=-1, show_default=True)
 @click.version_option(version=__version__, prog_name="Elephant SOCK5 Client")
 def _cli(
-        port, url, alias, tunnel_count,
+        port, urls, alias, tunnel_count,
         quiet, save_log, session_request_timeout, no_color,
         proxy_ip, proxy_port, global_,
         enable_reverse_proxy, reverse_ip, reverse_port, no_reverse_global,
@@ -452,7 +452,10 @@ def _cli(
         _quiet = True
         logger.setLevel(logging.ERROR)
 
-    all_tunnels = [Tunnel(url, hello_params.copy()) for _ in range(tunnel_count)]
+    urls = set(urls.split(','))
+    tunnel_count = max(tunnel_count, len(urls))
+    urls = cycle(urls)
+    all_tunnels = [Tunnel(next(urls), hello_params.copy()) for _ in range(tunnel_count)]
     for t in all_tunnels:
         wst = threading.Thread(target=t.start)
         wst.daemon = True
@@ -464,8 +467,9 @@ def _cli(
         count -= 1
         time.sleep(0.5)
         if count <= 0:
-            log_print("Timeout waiting for tunnels to be ready", fg='red', level=logging.ERROR, force_print=True)
+            log_print("Timeout waiting for all tunnels to be ready, abort", fg='red', level=logging.ERROR, force_print=True)
             return
+
     tunnels = cycle(all_tunnels)
 
     log_print(f"Proxy server started and listening on port {port} ...", fg='green', underline=True, force_print=True)
