@@ -39,9 +39,9 @@ ACCEPTOR = EventLoopGroup(1, 'Acceptor')
 WORKER = EventLoopGroup(1, 'Worker')
 
 
-def log_print(msg, *args, fg=None, underline=None, level=logging.INFO, **kwargs):
+def log_print(msg, *args, fg=None, underline=None, level=logging.INFO, force_print=False, **kwargs):
     logger.log(level, msg, *args, **kwargs)
-    if not _quiet:
+    if not _quiet or force_print:
         message = msg
         if has_format_placeholders(msg):
             try:
@@ -91,7 +91,7 @@ class Tunnel:
         )
 
         # ws.run_forever(dispatcher=rel, reconnect=5)
-        log_print(f"Starting Tunnel#{self._count} (URL: {self.url}) ...", underline=True)
+        log_print(f"Starting Tunnel#{self._count} (URL: {self.url}) ...", underline=True, force_print=True)
         self._ws.run_forever(reconnect=10, sslopt={"cert_reqs": ssl.CERT_NONE}, ping_interval=60 * 3, ping_timeout=30)
         # rel.signal(2, rel.abort)
         # rel.dispatch()
@@ -214,7 +214,7 @@ class Tunnel:
 
     @sneaky()
     def _on_open(self, ws):
-        log_print(f"[on_open] Opened connection#{self._count} {socket_description(ws.sock.sock)}", fg='bright_blue')
+        log_print(f"[on_open] Opened connection#{self._count} {socket_description(ws.sock.sock)}", fg='bright_blue', force_print=True)
         self._localport = ws.sock.sock.getsockname()[1]
         self._thread = threading.current_thread()
         self._ws = ws
@@ -239,11 +239,11 @@ class Tunnel:
             self._handle_frame(ws, frame)
 
     def _on_close(self, ws, close_status_code, close_msg):
-        log_print(f"[on_close] Connection closed #{self._count}, status code: {close_status_code}, message: {close_msg}", fg='red')
+        log_print(f"[on_close] Connection closed #{self._count}, status code: {close_status_code}, message: {close_msg}", fg='red', force_print=True)
 
     def _on_error(self, ws, error):
         if error and str(error):
-            log_print(f"[on_error] {error}", fg='red', level=logging.ERROR)
+            log_print(f"[on_error #{self._count}] {error}", fg='red', level=logging.ERROR, force_print=True)
 
     def _trace(self, frame: Frame, send=True, method: str = None):
         if _quiet:
@@ -406,7 +406,7 @@ def _config_logging():
 @click.option('--request-timeout', '-t', 'session_request_timeout', default=3, help="Session request timeout (seconds)", show_default=True, type=int)
 @click.option('--no-color', is_flag=True, help="Disable color output")
 @click.option('--verbose', '-v', 'verbose', is_flag=True, help="Verbose mode")
-@click.option('--tunnels', '-n', 'tunnel_count', default=1, help="Number of tunnels to achieve load balance", show_default=True, type=click.IntRange(1, 8, clamp=True))
+@click.option('--tunnels', '-n', 'tunnel_count', default=1, help="Number of tunnels to achieve load balance", show_default=True, type=click.IntRange(1, clamp=True))
 @click.option('--proxy-ip', help="Proxy IP", type=str)
 @click.option('--proxy-port', help="Proxy port", type=int, default=-1, show_default=True)
 @click.version_option(version=__version__, prog_name="Elephant SOCK5 Client")
@@ -442,7 +442,7 @@ def _cli(
         hello_params['reversePort'] = reverse_port
         hello_params['reverseGlobal'] = not no_reverse_global
 
-    if save_log:
+    if save_log or quiet:
         _config_logging()
 
     if verbose:
@@ -458,17 +458,17 @@ def _cli(
         wst.daemon = True
         wst.start()
 
-    log_print(f"Waiting for all {len(all_tunnels)} tunnels to be ready ...", underline=True)
+    log_print(f"Waiting for all {len(all_tunnels)} tunnels to be ready ...", underline=True, force_print=True)
     count = 10
     while not all(t._ever_active for t in all_tunnels):
         count -= 1
         time.sleep(0.5)
         if count <= 0:
-            log_print("Timeout waiting for tunnels to be ready", fg='red', level=logging.ERROR)
+            log_print("Timeout waiting for tunnels to be ready", fg='red', level=logging.ERROR, force_print=True)
             return
     tunnels = cycle(all_tunnels)
 
-    log_print(f"Proxy server started and listening on port {port} ...", fg='green', underline=True)
+    log_print(f"Proxy server started and listening on port {port} ...", fg='green', underline=True, force_print=True)
     sb = ServerBootstrap(
         parant_group=ACCEPTOR,
         child_group=WORKER,
