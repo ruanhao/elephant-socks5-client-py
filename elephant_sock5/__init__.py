@@ -214,7 +214,7 @@ class Tunnel:
 
     @sneaky()
     def _on_open(self, ws):
-        log_print(f"[on_open] Opened connection#{self._count} {socket_description(ws.sock.sock)}", fg='bright_blue', force_print=True)
+        log_print(f"[on_open] Opened connection @{self._count} {socket_description(ws.sock.sock)}", fg='bright_blue', force_print=True)
         self._localport = ws.sock.sock.getsockname()[1]
         self._thread = threading.current_thread()
         self._ws = ws
@@ -239,11 +239,11 @@ class Tunnel:
             self._handle_frame(ws, frame)
 
     def _on_close(self, ws, close_status_code, close_msg):
-        log_print(f"[on_close] Connection closed #{self._count}, status code: {close_status_code}, message: {close_msg}", fg='red', force_print=True)
+        log_print(f"[on_close] Connection closed @{self._count}, status code: {close_status_code}, message: {close_msg}", fg='red', force_print=True)
 
     def _on_error(self, ws, error):
         if error and str(error):
-            log_print(f"[on_error #{self._count}] {error}", fg='red', level=logging.ERROR, force_print=True)
+            log_print(f"[on_error @{self._count}] {error}", fg='red', level=logging.ERROR, force_print=True)
 
     def _trace(self, frame: Frame, send=True, method: str = None):
         if _quiet:
@@ -309,14 +309,16 @@ class ReverseProxyChannelHandler(ChannelHandlerAdapter):
     def __init__(self, tunnel: Tunnel, session_id: int):
         self._session_id = session_id
         self._tunnel = tunnel
+        self._tunnel_seq = tunnel._count
 
     def exception_caught(self, ctx, exception):
-        logger.error("[Reverse][Exception Caught] %s : %s", ctx.channel(), str(exception), exc_info=exception)
-        click.secho(f"[Reverse][Exception Caught] {ctx.channel()} : {str(exception)}", fg='red')
+        logger.error("[Reverse][Exception Caught #%d @%d] %s : %s",
+                     self._session_id, self._tunnel_seq, ctx.channel(), str(exception), exc_info=exception)
+        click.secho(f"[Reverse][Exception Caught #{self._session_id} @{self._tunnel_seq}] {ctx.channel()} : {str(exception)}", fg='red')
         ctx.close()
 
     def channel_active(self, ctx):
-        log_print(f"[Reverse][channel_active] {ctx.channel()}", fg='green', level=logging.DEBUG)
+        log_print(f"[Reverse][channel_active #{self._session_id} @{self._tunnel_seq}] {ctx.channel()}", fg='green', level=logging.DEBUG)
 
     def channel_read(self, ctx, bytebuf):
         for sub_bytebuf in chunk_list(bytebuf, 1024):
@@ -328,7 +330,7 @@ class ReverseProxyChannelHandler(ChannelHandlerAdapter):
             self._tunnel._send_frame(data_frame)
 
     def channel_inactive(self, ctx):
-        log_print(f"[Reverse][channel_inactive #{self._session_id}] {ctx.channel()}", fg='bright_black', level=logging.DEBUG)
+        log_print(f"[Reverse][channel_inactive #{self._session_id} @{self._tunnel_seq}] {ctx.channel()}", fg='bright_black', level=logging.DEBUG)
         self._tunnel.remove_session(self._session_id)
         self._tunnel.send_termination_request(self._session_id)
 
@@ -338,10 +340,11 @@ class ProxyChannelHandler(ChannelHandlerAdapter):
     def __init__(self):
         self._session_id = None
         self._tunnel: Tunnel = next(tunnels)
+        self._tunnel_seq = self._tunnel._count
 
     def exception_caught(self, ctx, exception):
-        logger.error("[Exception Caught] %s : %s", ctx.channel(), str(exception), exc_info=exception)
-        click.secho(f"[Exception Caught] {ctx.channel()} : {str(exception)}", fg='red')
+        logger.error("[Exception Caught #%s @%s] %s : %s", self._session_id or '???', self._tunnel_seq, ctx.channel(), str(exception), exc_info=exception)
+        click.secho(f"[Exception Caught #{self._session_id or '???'} @{self._tunnel_seq}] {ctx.channel()} : {str(exception)}", fg='red')
         ctx.close()
 
     def channel_read(self, ctx, bytebuf):
@@ -357,7 +360,7 @@ class ProxyChannelHandler(ChannelHandlerAdapter):
             self._tunnel._send_frame(data_frame)
 
     def channel_active(self, ctx):
-        log_print(f"[channel_active] {ctx.channel()}", fg='green', level=logging.DEBUG)
+        log_print(f"[channel_active @{self._tunnel_seq}] {ctx.channel()}", fg='green', level=logging.DEBUG)
         self._session_id = self._tunnel.send_session_request(ctx)
         if self._session_id < 0:
             log_print(f"Failed to establish session with {ctx.channel()}", fg='red', level=logging.ERROR)
@@ -365,7 +368,7 @@ class ProxyChannelHandler(ChannelHandlerAdapter):
             return
 
     def channel_inactive(self, ctx):
-        log_print(f"[channel_inactive #{self._session_id or '???'}] {ctx.channel()}", fg='bright_black', level=logging.DEBUG)
+        log_print(f"[channel_inactive #{self._session_id or '???'} @{self._tunnel_seq}] {ctx.channel()}", fg='bright_black', level=logging.DEBUG)
         if self._session_id:
             try:
                 self._tunnel.send_termination_request(self._session_id)
