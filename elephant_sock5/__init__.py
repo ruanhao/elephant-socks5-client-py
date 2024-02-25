@@ -4,6 +4,7 @@ from datetime import datetime
 import threading
 import ssl
 import logging
+from typing import Optional
 import websocket
 from concurrent.futures import Future, TimeoutError
 from websocket._abnf import ABNF
@@ -32,7 +33,8 @@ _no_color = False
 _proxy_ip = None
 _proxy_port = None
 
-tunnels = None                  # cycle
+tunnels = None                  # cycle object
+_total_tunnels = 0
 _counter = count(start=0, step=1)
 
 ACCEPTOR = EventLoopGroup(1, 'Acceptor')
@@ -96,19 +98,29 @@ class Tunnel:
         # rel.signal(2, rel.abort)
         # rel.dispatch()
 
-    def _send_frame(self, frame: Frame, method: str = None) -> None:
+    def check_connected(self, throw=False):
         if not self._ever_active or not self._ws:
-            raise Exception("Tunnel not ready (Init Connecting))")
+            if throw:
+                raise Exception("Tunnel not ready (Init Connecting))")
+            return False
         if not self._ws.sock:
-            raise Exception(">Tunnel Disconnected (Reconnecting)")
-        connected = False
+            if throw:
+                raise Exception(">Tunnel Disconnected (Reconnecting)")
+            return False
         try:
             connected = self._ws.sock.connected
         except Exception:
-            raise Exception(">>Tunnel Disconnected (Reconnecting)")
+            if throw:
+                raise Exception(">>Tunnel Disconnected (Reconnecting)")
+            return False
         if not connected:
-            raise Exception(">>>Tunnel Disconnected (Reconnecting)")
+            if throw:
+                raise Exception(">>>Tunnel Disconnected (Reconnecting)")
+            return False
+        return True
 
+    def _send_frame(self, frame: Frame, method: str = None) -> None:
+        self.check_connected(throw=True)
         self._trace(frame, True, method)
         self._ws.send(frame.to_bytes(), ABNF.OPCODE_BINARY)
 
@@ -260,7 +272,7 @@ class Tunnel:
                 if jrpc_id in self._responseFutures:
                     method, _ = self._responseFutures.get(jrpc_id)
                 else:
-                    method = '??????'
+                    method = '?'
 
             if 'agent-hello' == method:
                 msg0 = jrpc.get('params')
@@ -339,12 +351,18 @@ class ProxyChannelHandler(ChannelHandlerAdapter):
 
     def __init__(self):
         self._session_id = None
-        self._tunnel: Tunnel = next(tunnels)
-        self._tunnel_seq = self._tunnel._count
+        self._tunnel = self._next_valid_tunnel()
+        self._tunnel_seq = self._tunnel._count if self._tunnel else '?'
+
+    def _next_valid_tunnel(self) -> Optional[Tunnel]:
+        for _ in range(_total_tunnels):
+            t = next(tunnels)
+            if t.check_connected():
+                return t
 
     def exception_caught(self, ctx, exception):
-        logger.error("[Exception Caught #%s @%s] %s : %s", self._session_id or '???', self._tunnel_seq, ctx.channel(), str(exception), exc_info=exception)
-        click.secho(f"[Exception Caught #{self._session_id or '???'} @{self._tunnel_seq}] {ctx.channel()} : {str(exception)}", fg='red')
+        logger.error("[Exception Caught #%s @%s] %s : %s", self._session_id or '?', self._tunnel_seq, ctx.channel(), str(exception), exc_info=exception)
+        click.secho(f"[Exception Caught #{self._session_id or '?'} @{self._tunnel_seq}] {ctx.channel()} : {str(exception)}", fg='red')
         ctx.close()
 
     def channel_read(self, ctx, bytebuf):
@@ -361,6 +379,10 @@ class ProxyChannelHandler(ChannelHandlerAdapter):
 
     def channel_active(self, ctx):
         log_print(f"[channel_active @{self._tunnel_seq}] {ctx.channel()}", fg='green', level=logging.DEBUG)
+        if self._tunnel is None:
+            log_print(f"{ctx.channel()} All tunnels disconnected!!", fg='red', level=logging.ERROR)
+            ctx.close()
+            return
         self._session_id = self._tunnel.send_session_request(ctx)
         if self._session_id < 0:
             log_print(f"Failed to establish session with {ctx.channel()}", fg='red', level=logging.ERROR)
@@ -368,7 +390,7 @@ class ProxyChannelHandler(ChannelHandlerAdapter):
             return
 
     def channel_inactive(self, ctx):
-        log_print(f"[channel_inactive #{self._session_id or '???'} @{self._tunnel_seq}] {ctx.channel()}", fg='bright_black', level=logging.DEBUG)
+        log_print(f"[channel_inactive #{self._session_id or '?'} @{self._tunnel_seq}] {ctx.channel()}", fg='bright_black', level=logging.DEBUG)
         if self._session_id:
             try:
                 self._tunnel.send_termination_request(self._session_id)
@@ -424,6 +446,7 @@ def _cli(
     global _session_request_timeout
     global _no_color
     global tunnels
+    global _total_tunnels
     global _proxy_ip
     global _proxy_port
     global _enable_reverse_proxy
@@ -474,6 +497,7 @@ def _cli(
             return
 
     tunnels = cycle(all_tunnels)
+    _total_tunnels = len(all_tunnels)
 
     log_print(f"Proxy server started and listening on port {port} ...", fg='green', underline=True, force_print=True)
     sb = ServerBootstrap(
