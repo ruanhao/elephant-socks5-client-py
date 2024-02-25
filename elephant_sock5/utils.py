@@ -7,6 +7,7 @@ from functools import wraps
 import inspect
 import logging
 from urllib.parse import urlparse, parse_qs
+from attrs import define, field
 
 
 _logger = logging.getLogger(__name__)
@@ -114,3 +115,35 @@ def parse_uri(uri):
     params = parse_qs(parsed_uri.query)
 
     return params
+
+
+@define(slots=True, kw_only=True)
+class Metric:
+
+    name: str = field()
+    count: int = field(default=0)
+    sum: float = field(default=0.0)
+    min: float = field(default=float('inf'))
+    max: float = field(default=float('-inf'))
+    avg: float = field(default=0.0)
+
+    @staticmethod
+    def of(name: str) -> 'Metric':
+        return Metric(name=name)
+
+    def record(self, value: float):
+        self.count += 1
+        self.sum += value
+        self.min = min(self.min, value)
+        self.max = max(self.max, value)
+        self.avg = self.sum / self.count
+
+    def reset(self):
+        self.count = 0
+        self.sum = 0.0
+        self.min = float('inf')
+        self.max = float('-inf')
+        self.avg = 0.0
+
+    def __str__(self):
+        return f"Metric(name:{self.name} count:{self.count}/sum:{self.sum:.2f}/min:{self.min:.2f}/max:{self.max:.2f}/avg:{self.avg:.2f})"

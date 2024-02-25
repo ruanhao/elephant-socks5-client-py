@@ -9,7 +9,7 @@ import websocket
 from concurrent.futures import Future, TimeoutError
 from websocket._abnf import ABNF
 from elephant_sock5.protocol import bytes_to_frame, OP_CONTROL, OP_DATA, JRPCResponse, SessionRequest, Hello, Frame, TerminationRequest
-from elephant_sock5.utils import LengthFieldBasedFrameDecoder, chunk_list, sneaky, socket_description, has_format_placeholders
+from elephant_sock5.utils import LengthFieldBasedFrameDecoder, chunk_list, sneaky, socket_description, has_format_placeholders, Metric
 from elephant_sock5.version import __version__
 from click import secho
 import json
@@ -83,6 +83,10 @@ class Tunnel:
             'version': __version__,
             'seq': self._count
         })
+        self._session_create_metric = None
+
+    def create_session_create_metric(self):
+        self._session_create_metric = Metric.of(f"session-create-rtt @{self._count}")
 
     @sneaky()
     def start(self):
@@ -217,11 +221,14 @@ class Tunnel:
             sr = SessionRequest.sock5()
         future = Future()
         self._responseFutures[sr.id] = ('session-request-response', future)
+        s = time.perf_counter()
         self._send_frame(sr.to_frame())
         try:
             jrpc = future.result(_session_request_timeout)  # wait for response
+            e = time.perf_counter()
+            self._session_create_metric.record(e - s)
         except TimeoutError:
-            raise Exception(f"Session request timeout ({_session_request_timeout} seconds)")
+            raise Exception(f"Session request timeout [{self._session_create_metric}]")
         session_id = jrpc['result']['session-id']
         self._clients[session_id] = ctx
         return session_id
@@ -229,11 +236,9 @@ class Tunnel:
     @sneaky()
     def _on_open(self, ws):
         global _connected_counter
-        log_print(f"[on_open] Opened connection @{self._count} {socket_description(ws.sock.sock)}", fg='bright_blue', force_print=True)
-
         with _lock:
             _connected_counter += 1
-            log_print(f"[{_connected_counter}/{_total_tunnels}] Connected", force_print=True)
+            log_print(f"[on_open {_connected_counter}/{_total_tunnels}] Opened connection @{self._count} {socket_description(ws.sock.sock)}", fg='bright_blue', force_print=True)
 
         self._localport = ws.sock.sock.getsockname()[1]
         self._thread = threading.current_thread()
@@ -246,6 +251,7 @@ class Tunnel:
             ctx.close()
         self._responseFutures = {}
         self._clients = {}
+        self.create_session_create_metric()
 
         obj = Hello()
         obj.params.update(self.hello_params)
@@ -260,18 +266,15 @@ class Tunnel:
 
     def _on_close(self, ws, close_status_code, close_msg):
         global _connected_counter
-        log_print(f"[on_close] Connection closed @{self._count}, status code: {close_status_code}, message: {close_msg}", fg='red', force_print=True)
         with _lock:
             _connected_counter -= 1
-            log_print(f"[{_connected_counter}/{_total_tunnels}] Connected", force_print=True)
+            log_print(f"[on_close {_connected_counter}/{_total_tunnels}] Connection closed @{self._count}, status code: {close_status_code}, message: {close_msg} [{self._session_create_metric}]", fg='red', force_print=True)
 
     def _on_error(self, ws, error):
         global _connected_counter
         with _lock:
             _connected_counter -= 1
-            log_print(f"[{_connected_counter}/{_total_tunnels}] Connected", force_print=True)
-        if error and str(error):
-            log_print(f"[on_error @{self._count}] {error}", fg='red', level=logging.ERROR, force_print=True)
+            log_print(f"[on_error @{self._count} {_connected_counter}/{_total_tunnels}] {error} [{self._session_create_metric}]", fg='red', level=logging.ERROR, force_print=True)
 
     def _trace(self, frame: Frame, send=True, method: str = None):
         if _quiet:
@@ -370,7 +373,8 @@ class ProxyChannelHandler(ChannelHandlerAdapter):
         self._tunnel = self._next_valid_tunnel()
         self._tunnel_seq = self._tunnel._count if self._tunnel else '?'
 
-    def _next_valid_tunnel(self) -> Optional[Tunnel]:
+    @staticmethod
+    def _next_valid_tunnel() -> Optional[Tunnel]:
         for _ in range(_total_tunnels):
             t = next(tunnels)
             if t.check_connected():
