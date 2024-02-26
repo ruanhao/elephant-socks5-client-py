@@ -12,6 +12,12 @@ def _catch_output(func, *args, **kwargs):
     return f.getvalue()
 
 
+class _Socket:
+
+    def getpeername(self):
+        return "peername"
+
+
 class Test(TestCase):
 
     def test_check_connected(self):
@@ -21,13 +27,15 @@ class Test(TestCase):
         tunnel._ws = None
         self.assertEqual(tunnel.check_connected(), False)
         ws = namedtuple('WS', ['sock'])
-        Sock = namedtuple('Sock', ['connected'])
+        Sock = namedtuple('Sock', ['connected', 'sock'])
         tunnel._ws = ws(sock=None)
         self.assertEqual(tunnel.check_connected(), False)
-        tunnel._ws = ws(sock=Sock(connected=False))
+        tunnel._ws = ws(sock=Sock(connected=False, sock=None))
         self.assertEqual(tunnel.check_connected(), False)
-        tunnel._ws = ws(sock=Sock(connected=True))
-        self.assertEqual(tunnel.check_connected(), True)
+        tunnel._ws = ws(sock=Sock(connected=True, sock=None))
+        self.assertEqual(tunnel.check_connected(), False)
+        tunnel._ws = ws(sock=Sock(connected=True, sock=_Socket()))
+        self.assertEqual(tunnel.check_connected(True), True)
 
     def test_log_print(self):
         self.assertEqual(_catch_output(log_print, "hello", "world"), "hello world\n")

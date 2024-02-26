@@ -33,14 +33,18 @@ _no_color = False
 _proxy_ip = None
 _proxy_port = None
 
+_tunnels = []                   # list of Tunnel
 tunnels = None                  # cycle object
-_total_tunnels = 0
 _counter = count(start=0, step=1)
 _lock = threading.Lock()
 _connected_counter = set()
 
 ACCEPTOR = EventLoopGroup(1, 'Acceptor')
 WORKER = EventLoopGroup(1, 'Worker')
+
+
+def _actives():
+    return len([t for t in _tunnels if t.check_connected()])
 
 
 def log_print(msg, *args, fg=None, underline=None, level=logging.INFO, force_print=False, **kwargs):
@@ -75,7 +79,6 @@ class Tunnel:
     def __attrs_post_init__(self):
         self._clients = {}      # session_id -> ctx
         self._responseFutures = {}  # id -> (method, Future(jrpc))
-        self._ever_active = False
         self._thread = None     # WebSocket thread
         self._localport = -1
         self._count = next(_counter)  # sequence
@@ -84,6 +87,7 @@ class Tunnel:
             'seq': self._count
         })
         self._session_create_metric = None
+        self._ws = None
 
     def create_session_create_metric(self):
         self._session_create_metric = Metric.of(f"session-create-rtt @{self._count}")
@@ -105,15 +109,12 @@ class Tunnel:
         # rel.dispatch()
 
     def check_connected(self, throw=False):
-        if not self._ever_active or not self._ws:
+        if not self._ws:
             if throw:
                 raise Exception("Tunnel not ready (Init Connecting))")
             return False
-        if not self._ws.sock:
-            if throw:
-                raise Exception(">Tunnel Disconnected (Reconnecting)")
-            return False
         try:
+            _ = self._ws.sock.sock.getpeername()
             connected = self._ws.sock.connected
         except Exception:
             if throw:
@@ -236,13 +237,11 @@ class Tunnel:
     @sneaky()
     def _on_open(self, ws):
         with _lock:
-            _connected_counter.add(self._count)
-            log_print(f"[on_open {len(_connected_counter)}/{_total_tunnels}] Opened connection @{self._count} {socket_description(ws.sock.sock)}", fg='bright_blue', force_print=True)
+            log_print(f"[on_open {_actives()}/{len(_tunnels)}] Opened connection @{self._count} {socket_description(ws.sock.sock)}", fg='bright_blue', force_print=True)
 
         self._localport = ws.sock.sock.getsockname()[1]
         self._thread = threading.current_thread()
         self._ws = ws
-        self._ever_active = True
         if self._clients:
             clients_count = len(self._clients)
             log_print(f"Closing {clients_count} stale connections ...", fg='magenta')
@@ -265,13 +264,11 @@ class Tunnel:
 
     def _on_close(self, ws, close_status_code, close_msg):
         with _lock:
-            _connected_counter.discard(self._count)
-            log_print(f"[on_close {len(_connected_counter)}/{_total_tunnels}] Connection closed @{self._count}, status code: {close_status_code}, message: {close_msg} [{self._session_create_metric}]", fg='red', force_print=True)
+            log_print(f"[on_close {_actives()}/{len(_tunnels)}] Connection closed @{self._count}, status code: {close_status_code}, message: {close_msg} [{self._session_create_metric}]", fg='red', force_print=True)
 
     def _on_error(self, ws, error):
         with _lock:
-            _connected_counter.discard(self._count)
-            log_print(f"[on_error @{self._count} {len(_connected_counter)}/{_total_tunnels}] {error} [{self._session_create_metric}]", fg='red', level=logging.ERROR, force_print=True)
+            log_print(f"[on_error @{self._count} {_actives()}/{len(_tunnels)}] {error} [{self._session_create_metric}]", fg='red', level=logging.ERROR, force_print=True)
 
     def _trace(self, frame: Frame, send=True, method: str = None):
         if _quiet:
@@ -372,7 +369,7 @@ class ProxyChannelHandler(ChannelHandlerAdapter):
 
     @staticmethod
     def _next_valid_tunnel() -> Optional[Tunnel]:
-        for _ in range(_total_tunnels):
+        for _ in range(len(_tunnels)):
             t = next(tunnels)
             if t.check_connected():
                 return t
@@ -462,8 +459,8 @@ def _cli(
     global _quiet
     global _session_request_timeout
     global _no_color
-    global tunnels
-    global _total_tunnels
+    global _tunnels
+    global tunnels              # cycle list of tunnels
     global _proxy_ip
     global _proxy_port
     global _enable_reverse_proxy
@@ -498,17 +495,16 @@ def _cli(
     urls = set(urls.split(','))
     tunnel_count = max(tunnel_count, len(urls))
     urls = cycle(urls)
-    all_tunnels = [Tunnel(next(urls), hello_params.copy()) for _ in range(tunnel_count)]
-    _total_tunnels = len(all_tunnels)
-    tunnels = cycle(all_tunnels)
-    for t in all_tunnels:
+    _tunnels = [Tunnel(next(urls), hello_params.copy()) for _ in range(tunnel_count)]
+    tunnels = cycle(_tunnels)
+    for t in _tunnels:
         wst = threading.Thread(target=t.start)
         wst.daemon = True
         wst.start()
 
-    log_print(f"Waiting for all {len(all_tunnels)} tunnels to be ready ...", underline=True, force_print=True)
+    log_print(f"Waiting for all {len(_tunnels)} tunnels to be ready ...", underline=True, force_print=True)
     count = 10
-    while not all(t._ever_active for t in all_tunnels):
+    while not all(t.check_connected() for t in _tunnels):
         count -= 1
         time.sleep(0.5)
         if count <= 0:
