@@ -37,7 +37,7 @@ tunnels = None                  # cycle object
 _total_tunnels = 0
 _counter = count(start=0, step=1)
 _lock = threading.Lock()
-_connected_counter = 0
+_connected_counter = set()
 
 ACCEPTOR = EventLoopGroup(1, 'Acceptor')
 WORKER = EventLoopGroup(1, 'Worker')
@@ -78,7 +78,7 @@ class Tunnel:
         self._ever_active = False
         self._thread = None     # WebSocket thread
         self._localport = -1
-        self._count = next(_counter)
+        self._count = next(_counter)  # sequence
         self.hello_params.update({
             'version': __version__,
             'seq': self._count
@@ -235,10 +235,9 @@ class Tunnel:
 
     @sneaky()
     def _on_open(self, ws):
-        global _connected_counter
         with _lock:
-            _connected_counter += 1
-            log_print(f"[on_open {_connected_counter}/{_total_tunnels}] Opened connection @{self._count} {socket_description(ws.sock.sock)}", fg='bright_blue', force_print=True)
+            _connected_counter.add(self._count)
+            log_print(f"[on_open {len(_connected_counter)}/{_total_tunnels}] Opened connection @{self._count} {socket_description(ws.sock.sock)}", fg='bright_blue', force_print=True)
 
         self._localport = ws.sock.sock.getsockname()[1]
         self._thread = threading.current_thread()
@@ -265,16 +264,14 @@ class Tunnel:
             self._handle_frame(ws, frame)
 
     def _on_close(self, ws, close_status_code, close_msg):
-        global _connected_counter
         with _lock:
-            _connected_counter -= 1
-            log_print(f"[on_close {_connected_counter}/{_total_tunnels}] Connection closed @{self._count}, status code: {close_status_code}, message: {close_msg} [{self._session_create_metric}]", fg='red', force_print=True)
+            _connected_counter.discard(self._count)
+            log_print(f"[on_close {len(_connected_counter)}/{_total_tunnels}] Connection closed @{self._count}, status code: {close_status_code}, message: {close_msg} [{self._session_create_metric}]", fg='red', force_print=True)
 
     def _on_error(self, ws, error):
-        global _connected_counter
         with _lock:
-            _connected_counter -= 1
-            log_print(f"[on_error @{self._count} {_connected_counter}/{_total_tunnels}] {error} [{self._session_create_metric}]", fg='red', level=logging.ERROR, force_print=True)
+            _connected_counter.discard(self._count)
+            log_print(f"[on_error @{self._count} {len(_connected_counter)}/{_total_tunnels}] {error} [{self._session_create_metric}]", fg='red', level=logging.ERROR, force_print=True)
 
     def _trace(self, frame: Frame, send=True, method: str = None):
         if _quiet:
