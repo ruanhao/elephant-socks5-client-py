@@ -438,6 +438,7 @@ def _config_logging():
 @click.option('--alias', '-a', help="Alias for the client", type=str)
 @click.option('--quiet', '-q', is_flag=True, help="Quiet mode")
 @click.option('--enable-reverse-proxy', '-r', 'enable_reverse_proxy', is_flag=True, help="Enable reverse proxy")
+@click.option('--reverse-proxy-only', '-rpo', 'reverse_proxy_only', is_flag=True, help="No SOCKS5 server, only for reverse proxy")
 @click.option('--reverse-ip', help="Reverse proxy IP", type=str)
 @click.option('--reverse-port', help="Reverse proxy port", type=int, default=-1, show_default=True)
 @click.option('--no-reverse-global', 'no_reverse_global', is_flag=True, help="Reverse proxy listen on localhost")
@@ -454,7 +455,7 @@ def _cli(
         quiet, save_log, session_request_timeout, no_color,
         proxy_ip, proxy_port, global_,
         enable_reverse_proxy, reverse_ip, reverse_port, no_reverse_global,
-        verbose
+        verbose, reverse_proxy_only,
 ):
     global _quiet
     global _session_request_timeout
@@ -472,7 +473,7 @@ def _cli(
 
     _no_color = no_color
     _session_request_timeout = session_request_timeout
-    _enable_reverse_proxy = enable_reverse_proxy or (reverse_ip and reverse_port > 0)
+    _enable_reverse_proxy = enable_reverse_proxy or reverse_proxy_only or (reverse_ip and reverse_port > 0)
 
     hello_params = {}
     if alias:
@@ -510,6 +511,12 @@ def _cli(
         if count <= 0:
             log_print("Timeout waiting for all tunnels to be ready, abort", fg='red', level=logging.ERROR, force_print=True)
             return
+
+    if reverse_proxy_only:
+        log_print("Reverse proxy only mode!!", underline=True, force_print=True)
+        while True:
+            time.sleep(86400)
+        return
 
     log_print(f"Proxy server started and listening on port {port} ...", fg='green', underline=True, force_print=True)
     sb = ServerBootstrap(
