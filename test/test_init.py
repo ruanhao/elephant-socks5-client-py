@@ -1,5 +1,5 @@
 from unittest import TestCase
-from elephant_sock5 import log_print, Tunnel
+from elephant_socks5 import log_print, Tunnel
 import io
 from contextlib import redirect_stdout
 from collections import namedtuple

@@ -93,9 +93,9 @@ class SessionRequest(JRPC):
         return r
 
     @classmethod
-    def sock5(cls):
+    def socks5(cls):
         r = cls()
-        r.params['sock5'] = True
+        r.params['socks5'] = True
         return r
 
 

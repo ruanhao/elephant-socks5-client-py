@@ -1,5 +1,5 @@
 from unittest import TestCase
-from elephant_sock5.utils import chunk_list, parse_uri, Metric
+from elephant_socks5.utils import chunk_list, parse_uri, Metric
 
 
 class Test(TestCase):

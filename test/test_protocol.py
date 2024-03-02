@@ -1,7 +1,7 @@
 from unittest import TestCase
 import json
-from elephant_sock5.protocol import SessionRequest, OP_CONTROL, bytes_to_frame, Hello, TerminationRequest, Frame
-from elephant_sock5.utils import LengthFieldBasedFrameDecoder
+from elephant_socks5.protocol import SessionRequest, OP_CONTROL, bytes_to_frame, Hello, TerminationRequest, Frame
+from elephant_socks5.utils import LengthFieldBasedFrameDecoder
 import struct
 
 
@@ -25,7 +25,7 @@ class Test(TestCase):
         self.assertEqual(sr.params['ip'], '127.0.0.1')
         self.assertEqual(sr.params['port'], 1234)
         self.assertEqual(sr.params['protocol'], 'TCP')
-        self.assertFalse(sr.params.get('sock5', False))
+        self.assertFalse(sr.params.get('socks5', False))
 
         f = Frame(
             session_id=123,

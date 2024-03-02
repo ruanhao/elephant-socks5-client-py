@@ -8,9 +8,9 @@ from typing import Optional
 import websocket
 from concurrent.futures import Future, TimeoutError
 from websocket._abnf import ABNF
-from elephant_sock5.protocol import bytes_to_frame, OP_CONTROL, OP_DATA, JRPCResponse, SessionRequest, Hello, Frame, TerminationRequest
-from elephant_sock5.utils import LengthFieldBasedFrameDecoder, chunk_list, sneaky, socket_description, has_format_placeholders, Metric
-from elephant_sock5.version import __version__
+from elephant_socks5.protocol import bytes_to_frame, OP_CONTROL, OP_DATA, JRPCResponse, SessionRequest, Hello, Frame, TerminationRequest
+from elephant_socks5.utils import LengthFieldBasedFrameDecoder, chunk_list, sneaky, socket_description, has_format_placeholders, Metric
+from elephant_socks5.version import __version__
 from click import secho
 import json
 import string
@@ -18,7 +18,7 @@ from py_netty import Bootstrap, ServerBootstrap, ChannelHandlerAdapter, EventLoo
 from attrs import define, field
 from itertools import cycle, count
 
-logger = logging.getLogger("elephant-sock5")
+logger = logging.getLogger("elephant-socks5")
 
 URL = "ws[s]://localhost:4443/elephant/ws"
 
@@ -219,7 +219,7 @@ class Tunnel:
         if _proxy_ip and _proxy_port:
             sr = SessionRequest.of(_proxy_ip, _proxy_port)
         else:
-            sr = SessionRequest.sock5()
+            sr = SessionRequest.socks5()
         future = Future()
         self._responseFutures[sr.id] = ('session-request-response', future)
         s = time.perf_counter()
@@ -431,7 +431,7 @@ def _config_logging():
     logger.setLevel(logging.INFO)
 
 
-@click.command(short_help="Elephant SOCK5 client", context_settings=dict(help_option_names=['-h', '--help'], max_content_width=120))
+@click.command(short_help="Elephant SOCKS5 client", context_settings=dict(help_option_names=['-h', '--help'], max_content_width=120))
 @click.option('--port', '-p', default=1080, help="Local port to bind", show_default=True, type=int)
 @click.option('--global', '-g', 'global_', is_flag=True, help="Listen on all interfaces")
 @click.option('--server', '-s', 'urls', help=f"Elephant tunnel server URLs (like: {URL})", type=str, required=True)
@@ -448,7 +448,7 @@ def _config_logging():
 @click.option('--tunnels', '-n', 'tunnel_count', default=1, help="Number of tunnels to achieve load balance", show_default=True, type=click.IntRange(1, clamp=True))
 @click.option('--proxy-ip', help="Proxy IP", type=str)
 @click.option('--proxy-port', help="Proxy port", type=int, default=-1, show_default=True)
-@click.version_option(version=__version__, prog_name="Elephant SOCK5 Client")
+@click.version_option(version=__version__, prog_name="Elephant SOCKS5 Client")
 def _cli(
         port, urls, alias, tunnel_count,
         quiet, save_log, session_request_timeout, no_color,

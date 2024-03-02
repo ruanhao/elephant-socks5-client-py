@@ -1,7 +1,7 @@
-# elephant-sock5-client-py
-python client of Elephant(L4) tunnel for SOCK5 empowered by [py-netty](https://github.com/ruanhao/py-netty).
+# elephant-socks5-client-py
+python client of Elephant(L4) tunnel for SOCKS5 empowered by [py-netty](https://github.com/ruanhao/py-netty).
 
-[Elephant Server](https://github.com/ruanhao/elephant-sock5-tunnel) should be deployed first, which is a L4 tunnel server designed to provide a secure and high-performance tunneling solution for TCP traffic.
+[Elephant Server](https://github.com/ruanhao/elephant-socks5-tunnel) should be deployed first, which is a L4 tunnel server designed to provide a secure and high-performance tunneling solution for TCP traffic.
 
 ## Usage
 
