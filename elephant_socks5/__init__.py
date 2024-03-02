@@ -1,4 +1,5 @@
 import click
+import socket
 import time
 from datetime import datetime
 import threading
@@ -476,8 +477,7 @@ def _cli(
     _enable_reverse_proxy = enable_reverse_proxy or reverse_proxy_only or (reverse_ip and reverse_port > 0)
 
     hello_params = {}
-    if alias:
-        hello_params['alias'] = alias
+    hello_params['alias'] = alias or socket.gethostname()
     if reverse_ip and reverse_port > 0:
         hello_params['reverseHost'] = reverse_ip
         hello_params['reversePort'] = reverse_port
