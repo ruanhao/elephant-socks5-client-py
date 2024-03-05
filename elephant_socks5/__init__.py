@@ -10,7 +10,7 @@ import websocket
 from concurrent.futures import Future, TimeoutError
 from websocket._abnf import ABNF
 from elephant_socks5.protocol import bytes_to_frame, OP_CONTROL, OP_DATA, JRPCResponse, SessionRequest, Hello, Frame, TerminationRequest
-from elephant_socks5.utils import LengthFieldBasedFrameDecoder, chunk_list, sneaky, socket_description, has_format_placeholders, Metric
+from elephant_socks5.utils import LengthFieldBasedFrameDecoder, chunk_list, sneaky, socket_description, has_format_placeholders, Metric, my_ip
 from elephant_socks5.version import __version__
 from click import secho
 import json
@@ -478,6 +478,7 @@ def _cli(
 
     hello_params = {}
     hello_params['alias'] = alias or socket.gethostname()
+    hello_params['myip'] = my_ip()
     if reverse_ip and reverse_port > 0:
         hello_params['reverseHost'] = reverse_ip
         hello_params['reversePort'] = reverse_port

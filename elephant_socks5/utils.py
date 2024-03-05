@@ -1,5 +1,6 @@
 from typing import List, Tuple, Optional
 import traceback
+import socket
 import os
 import re
 import sys
@@ -105,6 +106,17 @@ def socket_description(sock):
 def has_format_placeholders(s):
     pattern = re.compile(r'{.*}|%[sd]')
     return bool(re.search(pattern, s))
+
+
+def my_ip():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        return s.getsockname()[0]
+    except (Exception,):
+        return socket.gethostbyname(socket.gethostname())
+    finally:
+        s.close()
 
 
 def parse_uri(uri):
