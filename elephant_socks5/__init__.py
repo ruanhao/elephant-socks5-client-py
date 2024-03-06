@@ -473,6 +473,7 @@ def _cli(
         _proxy_port = proxy_port
 
     _no_color = no_color
+    _quiet = quiet
     _session_request_timeout = session_request_timeout
     _enable_reverse_proxy = enable_reverse_proxy or reverse_proxy_only or (reverse_ip and reverse_port > 0)
 
@@ -489,10 +490,6 @@ def _cli(
 
     if verbose:
         logger.setLevel(logging.DEBUG)
-
-    if quiet:
-        _quiet = True
-        logger.setLevel(logging.ERROR)
 
     urls = set(urls.split(','))
     tunnel_count = max(tunnel_count, len(urls))
