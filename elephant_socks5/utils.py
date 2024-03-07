@@ -52,8 +52,13 @@ def chunk_list(lst, chunk_size=65535):
 
 def _all_args_repr(args, kw):
     try:
-        args_repr = [repr(arg) for arg in args]
-        kws = [f"{k}={repr(v)}" for k, v in kw.items()]
+        args_repr = [f"<{len(arg)} bytes>" if isinstance(arg, (bytes, bytearray)) else repr(arg) for arg in args]
+        kws = []
+        for k, v in kw.items():
+            if isinstance(v, (bytes, bytearray)):
+                kws.append(f"{k}=<{len(v)} bytes>")
+            else:
+                kws.append(f"{k}={repr(v)}")
         return ', '.join(args_repr + kws)
     except (Exception,):
         return "(?)"
