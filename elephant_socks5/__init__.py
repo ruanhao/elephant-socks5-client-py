@@ -357,8 +357,10 @@ class ReverseProxyChannelHandler(ChannelHandlerAdapter):
 
     def channel_inactive(self, ctx):
         log_print(f"[Reverse][channel_inactive #{self._session_id} @{self._tunnel_seq}] {ctx.channel()}", fg='bright_black', level=logging.DEBUG)
-        self._tunnel.remove_session(self._session_id)
-        self._tunnel.send_termination_request(self._session_id)
+        try:
+            self._tunnel.send_termination_request(self._session_id)
+        finally:
+            self._tunnel.remove_session(self._session_id)
 
 
 class ProxyChannelHandler(ChannelHandlerAdapter):
