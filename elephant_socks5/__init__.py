@@ -254,6 +254,7 @@ class Tunnel:
 
         obj = Hello()
         obj.params.update(self.hello_params)
+        obj.params['myip'] = my_ip()
         self._responseFutures[obj.id] = ('agent-hello-ack', Future())
         self._send_frame(obj.to_frame())
 
@@ -481,7 +482,6 @@ def _cli(
 
     hello_params = {}
     hello_params['alias'] = alias or socket.gethostname()
-    hello_params['myip'] = my_ip()
     if reverse_ip and reverse_port > 0:
         hello_params['reverseHost'] = reverse_ip
         hello_params['reversePort'] = reverse_port
