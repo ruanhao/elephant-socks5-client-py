@@ -1,4 +1,5 @@
 import click
+import inspect
 import socket
 import time
 from datetime import datetime
@@ -8,7 +9,7 @@ import logging
 from typing import Optional
 import websocket
 from concurrent.futures import Future, TimeoutError
-from websocket._abnf import ABNF
+from websocket._abnf import ABNF, STATUS_TRY_AGAIN_LATER
 from elephant_socks5.protocol import bytes_to_frame, OP_CONTROL, OP_DATA, JRPCResponse, SessionRequest, Hello, Frame, TerminationRequest
 from elephant_socks5.utils import LengthFieldBasedFrameDecoder, chunk_list, sneaky, socket_description, has_format_placeholders, Metric, my_ip
 from elephant_socks5.version import __version__
@@ -42,6 +43,7 @@ _connected_counter = set()
 
 ACCEPTOR = EventLoopGroup(1, 'Acceptor')
 WORKER = EventLoopGroup(1, 'Worker')
+RECONNECT = 10                  # seconds
 
 
 def _actives():
@@ -68,6 +70,7 @@ def log_print(msg, *args, fg=None, underline=None, level=logging.INFO, force_pri
         if _no_color:
             fg = None
             underline = None
+        message = f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}] {message}"
         secho(message, fg=fg, underline=underline)
 
 
@@ -95,17 +98,18 @@ class Tunnel:
 
     @sneaky()
     def start(self):
-        self._ws = websocket.WebSocketApp(
-            self.url,
-            on_open=self._on_open,
-            on_message=self._on_message,
-            on_error=self._on_error,
-            on_close=self._on_close
-        )
+        if not self._ws:
+            self._ws = websocket.WebSocketApp(
+                self.url,
+                on_open=self._on_open,
+                on_message=self._on_message,
+                on_error=self._on_error,
+                on_close=self._on_close
+            )
 
         # ws.run_forever(dispatcher=rel, reconnect=5)
         log_print(f"Starting Tunnel#{self._count} (URL: {self.url}) ...", underline=True, force_print=True)
-        self._ws.run_forever(reconnect=10, sslopt={"cert_reqs": ssl.CERT_NONE}, ping_interval=60 * 3, ping_timeout=30)
+        self._ws.run_forever(reconnect=RECONNECT, sslopt={"cert_reqs": ssl.CERT_NONE}, ping_interval=60 * 3, ping_timeout=30)
         # rel.signal(2, rel.abort)
         # rel.dispatch()
 
@@ -119,11 +123,11 @@ class Tunnel:
             connected = self._ws.sock.connected
         except Exception:
             if throw:
-                raise Exception(">>Tunnel Disconnected (Reconnecting)")
+                raise Exception(">>Tunnel Disconnected")
             return False
         if not connected:
             if throw:
-                raise Exception(">>>Tunnel Disconnected (Reconnecting)")
+                raise Exception(">>>Tunnel Disconnected")
             return False
         return True
 
@@ -238,7 +242,9 @@ class Tunnel:
     @sneaky()
     def _on_open(self, ws):
         with _lock:
-            log_print(f"[on_open {_actives()}/{len(_tunnels)}] Opened connection @{self._count} {socket_description(ws.sock.sock)}", fg='bright_blue', force_print=True)
+            log_print(f"[on_open {_actives()}/{len(_tunnels)}] Opened connection @{self._count} {socket_description(ws.sock.sock)} (threads/frames:{threading.active_count()}/{len(inspect.stack())})", fg='bright_blue', force_print=True)
+            # for thread in threading.enumerate():
+            #     print(thread.name)
 
         self._localport = ws.sock.sock.getsockname()[1]
         self._thread = threading.current_thread()
@@ -267,6 +273,15 @@ class Tunnel:
     def _on_close(self, ws, close_status_code, close_msg):
         with _lock:
             log_print(f"[on_close {_actives()}/{len(_tunnels)}] Connection closed @{self._count}, status code: {close_status_code}, message: {close_msg} [{self._session_create_metric}]", fg='red', force_print=True)
+        if close_status_code == STATUS_TRY_AGAIN_LATER:
+            log_print(f"Reconnecting @{self._count} in {RECONNECT} seconds ...", fg='magenta', force_print=True, level=logging.WARNING)
+            time.sleep(RECONNECT)
+            wst = threading.Thread(target=self.start)
+            wst.daemon = True
+            wst.start()
+            # self.start()
+        else:
+            log_print(f"No reconnection @{self._count}", fg='magenta', force_print=True, level=logging.WARNING)
 
     def _on_error(self, ws, error):
         with _lock:
@@ -379,8 +394,10 @@ class ProxyChannelHandler(ChannelHandlerAdapter):
                 return t
 
     def exception_caught(self, ctx, exception):
-        logger.error("[Exception Caught #%s @%s] %s : %s", self._session_id or '?', self._tunnel_seq, ctx.channel(), str(exception), exc_info=exception)
-        click.secho(f"[Exception Caught #{self._session_id or '?'} @{self._tunnel_seq}] {ctx.channel()} : {str(exception)}", fg='red')
+        exception_str = str(exception)
+        internal = 'Tunnel Disconnected' in exception_str
+        logger.error("[Exception Caught #%s @%s] %s : %s", self._session_id or '?', self._tunnel_seq, ctx.channel(), exception_str, exc_info=exception if not internal else None)
+        click.secho(f"[Exception Caught #{self._session_id or '?'} @{self._tunnel_seq}] {ctx.channel()} : {exception_str}", fg='red')
         ctx.close()
 
     def channel_read(self, ctx, bytebuf):

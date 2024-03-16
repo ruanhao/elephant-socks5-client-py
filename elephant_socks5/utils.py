@@ -100,7 +100,8 @@ def socket_description(sock):
     try:
         s_addr, s_port = sock.getsockname()[:2]
         d_addr, d_port = sock.getpeername()[:2]
-        return f"[id: {sock_id}, fd: {fileno}, L:/{s_addr}:{s_port} - R:/{d_addr}:{d_port}]"
+        # return f"[id:{sock_id}, fd:{fileno}, L:/{s_addr}:{s_port} - R:/{d_addr}:{d_port}]"
+        return f"[L:/{s_addr}:{s_port} - R:/{d_addr}:{d_port}]"
     except (Exception,):
         if s_addr:
             return f"[id: {sock_id}, fd: {fileno}, LISTENING]"
