@@ -306,6 +306,8 @@ class Tunnel:
         obj = Hello()
         obj.params.update(self.hello_params)
         obj.params['myip'] = my_ip()
+        obj.params['reverse'] = _enable_reverse_proxy
+        obj.params['shell'] = _enable_shell_proxy
         self._responseFutures[obj.id] = ('agent-hello-ack', Future())
         self._send_frame(obj.to_frame())
 
@@ -531,7 +533,7 @@ def _cli(
     _no_color = no_color
     _quiet = quiet
     _session_request_timeout = session_request_timeout
-    _enable_reverse_proxy = enable_reverse_proxy or reverse_proxy_only or (reverse_ip and reverse_port > 0)
+    _enable_reverse_proxy = enable_reverse_proxy or reverse_proxy_only or bool(reverse_ip and reverse_port > 0)
     _enable_shell_proxy = enable_shell_proxy
 
     hello_params = {}
