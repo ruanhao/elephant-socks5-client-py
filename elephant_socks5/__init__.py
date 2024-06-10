@@ -11,7 +11,7 @@ import websocket
 from concurrent.futures import Future, TimeoutError
 from websocket._abnf import ABNF, STATUS_TRY_AGAIN_LATER
 from elephant_socks5.protocol import bytes_to_frame, OP_CONTROL, OP_DATA, JRPCResponse, SessionRequest, Hello, Frame, TerminationRequest
-from elephant_socks5.utils import LengthFieldBasedFrameDecoder, chunk_list, sneaky, socket_description, has_format_placeholders, Metric, my_ip
+from elephant_socks5.utils import LengthFieldBasedFrameDecoder, chunk_list, sneaky, socket_description, has_format_placeholders, Metric, my_ip, ShellContext
 from elephant_socks5.version import __version__
 from click import secho
 import json
@@ -19,6 +19,8 @@ import string
 from py_netty import Bootstrap, ServerBootstrap, ChannelHandlerAdapter, EventLoopGroup
 from attrs import define, field
 from itertools import cycle, count
+import simple_proxy
+
 
 logger = logging.getLogger("elephant-socks5")
 
@@ -27,6 +29,7 @@ URL = "ws[s]://localhost:4443/elephant/ws"
 decoder = LengthFieldBasedFrameDecoder()
 
 _enable_reverse_proxy = False
+_enable_shell_proxy = False
 _quiet = False
 _trace_data = False
 _session_request_timeout = 3
@@ -131,6 +134,15 @@ class Tunnel:
             return False
         return True
 
+    def send_data(self, session_id: str, bytebuf: bytes):
+        for sub_bytebuf in chunk_list(bytebuf, 1024):
+            data_frame = Frame(
+                op_type=OP_DATA,
+                session_id=session_id,
+                payload=sub_bytebuf,
+            )
+            self._send_frame(data_frame)
+
     def _send_frame(self, frame: Frame, method: str = None) -> None:
         self.check_connected(throw=True)
         self._trace(frame, True, method)
@@ -159,7 +171,11 @@ class Tunnel:
                     session_id = jrpc['params']['session-id']
                     if session_id in self._clients:
                         ctx = self._clients[session_id]
-                        ctx.close()
+                        if isinstance(ctx, simple_proxy.ShellChannelHandler):
+                            handler = ctx
+                            handler.channel_inactive(ShellContext(self, session_id))
+                        else:
+                            ctx.close()
                         self.remove_session(session_id)
                 finally:
                     self._send_frame(JRPCResponse.of(jrpc_id).to_frame(), 'termination-response')
@@ -168,20 +184,35 @@ class Tunnel:
             elif method == 'agent-hello-ack':
                 pass
             elif method == 'session-request':
-                if not _enable_reverse_proxy:
-                    self._send_frame(JRPCResponse.of(jrpc_id, error={
-                        'reason': "reverse proxy is not enabled"
-                    }).to_frame(), 'session-request-response')
-                ip = jrpc['params']['ip']
-                port = jrpc['params']['port']
                 session_id = jrpc['params']['session-id']
-                ok = self._create_reverse_proxy(session_id, ip, port)
-                if ok:
-                    self._send_frame(JRPCResponse.of(jrpc_id).to_frame(), 'session-request-response')
-                else:
+                if jrpc['params'].get('shell'):
+                    if not _enable_shell_proxy:
+                        self._send_frame(JRPCResponse.of(jrpc_id, error={
+                            'reason': "shell proxy not enabled"
+                        }).to_frame(), 'session-request-response')
+                        return
+                    ok = self._create_shell_proxy(session_id)
+                    if ok:
+                        self._send_frame(JRPCResponse.of(jrpc_id).to_frame(), 'session-request-response')
+                    else:
+                        self._send_frame(JRPCResponse.of(jrpc_id, error={
+                            'reason': f"fail to create shell proxy for session:{session_id}"
+                        }).to_frame(), 'session-request-response')
+                elif not _enable_reverse_proxy:
                     self._send_frame(JRPCResponse.of(jrpc_id, error={
-                        'reason': f"fail to connect {ip}:{port}/session:{session_id}"
+                        'reason': "reverse proxy not enabled"
                     }).to_frame(), 'session-request-response')
+                    return
+                else:
+                    ip = jrpc['params']['ip']
+                    port = jrpc['params']['port']
+                    ok = self._create_reverse_proxy(session_id, ip, port)
+                    if ok:
+                        self._send_frame(JRPCResponse.of(jrpc_id).to_frame(), 'session-request-response')
+                    else:
+                        self._send_frame(JRPCResponse.of(jrpc_id, error={
+                            'reason': f"fail to connect {ip}:{port}/session:{session_id}"
+                        }).to_frame(), 'session-request-response')
             else:
                 log_print(f"Unknown method: {method}", fg='red')
         elif frame.op_type == OP_DATA:
@@ -189,7 +220,11 @@ class Tunnel:
             payload = frame.payload
             if session_id in self._clients:
                 ctx = self._clients[session_id]
-                ctx.write(payload)
+                if isinstance(ctx, simple_proxy.ShellChannelHandler):
+                    handler = ctx
+                    handler.channel_read(ShellContext(self, session_id), payload)
+                else:
+                    ctx.write(payload)
 
     def _create_reverse_proxy(self, session_id: int, ip: str, port: int) -> bool:
         try:
@@ -206,6 +241,16 @@ class Tunnel:
             return False
         self._clients[session_id] = channel.context()
         return True
+
+    def _create_shell_proxy(self, session_id: int) -> bool:
+        handler = simple_proxy.ShellChannelHandler()
+        try:
+            handler.channel_active(ShellContext(self, session_id))
+            self._clients[session_id] = handler
+            return True
+        except Exception as e:
+            log_print(f"[Shell]Failed to create shell: {e}", fg='red', level=logging.ERROR)
+            return False
 
     def remove_session(self, session_id: int) -> None:
         self._clients.pop(session_id, None)
@@ -363,13 +408,7 @@ class ReverseProxyChannelHandler(ChannelHandlerAdapter):
         log_print(f"[Reverse][channel_active #{self._session_id} @{self._tunnel_seq}] {ctx.channel()}", fg='green', level=logging.DEBUG)
 
     def channel_read(self, ctx, bytebuf):
-        for sub_bytebuf in chunk_list(bytebuf, 1024):
-            data_frame = Frame(
-                op_type=OP_DATA,
-                session_id=self._session_id,
-                payload=sub_bytebuf,
-            )
-            self._tunnel._send_frame(data_frame)
+        self._tunnel.send_data(self._session_id, bytebuf)
 
     def channel_inactive(self, ctx):
         log_print(f"[Reverse][channel_inactive #{self._session_id} @{self._tunnel_seq}] {ctx.channel()}", fg='bright_black', level=logging.DEBUG)
@@ -404,13 +443,7 @@ class ProxyChannelHandler(ChannelHandlerAdapter):
         if not self._session_id:
             ctx.close()         # failed to get seesion_id and there is incoming data here
             return
-        for sub_bytebuf in chunk_list(bytebuf, 1024):
-            data_frame = Frame(
-                op_type=OP_DATA,
-                session_id=self._session_id,
-                payload=sub_bytebuf,
-            )
-            self._tunnel._send_frame(data_frame)
+        self._tunnel.send_data(self._session_id, bytebuf)
 
     def channel_active(self, ctx):
         log_print(f"[channel_active @{self._tunnel_seq}] {ctx.channel()}", fg='green', level=logging.DEBUG)
@@ -458,7 +491,8 @@ def _config_logging():
 @click.option('--server', '-s', 'urls', help=f"Elephant tunnel server URLs (like: {URL})", type=str, required=True)
 @click.option('--alias', '-a', help="Alias for the client", type=str)
 @click.option('--quiet', '-q', is_flag=True, help="Quiet mode")
-@click.option('--enable-reverse-proxy', '-r', 'enable_reverse_proxy', is_flag=True, help="Enable reverse proxy")
+@click.option('--enable-shell-proxy', '-esp', 'enable_shell_proxy', is_flag=True, help="Enable Shell proxy")
+@click.option('--enable-reverse-proxy', '-erp', 'enable_reverse_proxy', is_flag=True, help="Enable reverse proxy")
 @click.option('--reverse-proxy-only', '-rpo', 'reverse_proxy_only', is_flag=True, help="No SOCKS5 server, only for reverse proxy")
 @click.option('--reverse-ip', help="Reverse proxy IP", type=str)
 @click.option('--reverse-port', help="Reverse proxy port", type=int, default=-1, show_default=True)
@@ -475,6 +509,7 @@ def _cli(
         port, urls, alias, tunnel_count,
         quiet, save_log, session_request_timeout, no_color,
         proxy_ip, proxy_port, global_,
+        enable_shell_proxy,
         enable_reverse_proxy, reverse_ip, reverse_port, no_reverse_global,
         verbose, reverse_proxy_only,
 ):
@@ -486,6 +521,7 @@ def _cli(
     global _proxy_ip
     global _proxy_port
     global _enable_reverse_proxy
+    global _enable_shell_proxy
 
     if proxy_ip:
         _proxy_ip = proxy_ip
@@ -496,6 +532,7 @@ def _cli(
     _quiet = quiet
     _session_request_timeout = session_request_timeout
     _enable_reverse_proxy = enable_reverse_proxy or reverse_proxy_only or (reverse_ip and reverse_port > 0)
+    _enable_shell_proxy = enable_shell_proxy
 
     hello_params = {}
     hello_params['alias'] = alias or socket.gethostname()
@@ -509,6 +546,9 @@ def _cli(
 
     if verbose:
         logger.setLevel(logging.DEBUG)
+
+    if enable_shell_proxy and not quiet:
+        simple_proxy._stderr = True
 
     urls = set(urls.split(','))
     tunnel_count = max(tunnel_count, len(urls))

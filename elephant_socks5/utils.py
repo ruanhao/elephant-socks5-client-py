@@ -165,3 +165,43 @@ class Metric:
 
     def __str__(self):
         return f"Metric(name:{self.name} count:{self.count}/sum:{self.sum:.2f}/min:{self.min:.2f}/max:{self.max:.2f}/avg:{self.avg:.2f})"
+
+
+class _DummySocket:
+
+    def getpeername(self) -> str:
+        return "dummy"
+
+    def __str__(self):
+        return "DummySocket"
+
+
+class _DummyChannel:
+
+    def socket(self):
+        return _DummySocket()
+
+    def __str__(self):
+        return "DummyChannel"
+
+
+class ShellContext:
+
+    def __init__(self, tunnel, session_id):
+        self._tunnel = tunnel
+        self._session_id = session_id
+
+    def close(self):
+        try:
+            self._tunnel.send_termination_request(self._session_id)
+        finally:
+            self._tunnel.remove_session(self._session_id)
+
+    def write(self, bytebuf: bytes):
+        self._tunnel.send_data(self._session_id, bytebuf)
+
+    def __str__(self):
+        return f"ShellContext({self.__dict__})"
+
+    def channel(self):
+        return _DummyChannel()
