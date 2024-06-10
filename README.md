@@ -3,6 +3,13 @@ python client of Elephant(L4) tunnel for SOCKS5 empowered by [py-netty](https://
 
 [Elephant Server](https://github.com/ruanhao/elephant-socks5-tunnel) should be deployed first, which is a L4 tunnel server designed to provide a secure and high-performance tunneling solution for TCP traffic.
 
+## Installation
+
+```commandline
+pip install elephant-socks5 -U
+```
+
+
 ## Usage
 
 ```
