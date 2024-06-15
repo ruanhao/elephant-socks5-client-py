@@ -496,8 +496,9 @@ def _config_logging():
 @click.option('--enable-shell-proxy', '-esp', 'enable_shell_proxy', is_flag=True, help="Enable Shell proxy")
 @click.option('--enable-reverse-proxy', '-erp', 'enable_reverse_proxy', is_flag=True, help="Enable reverse proxy")
 @click.option('--reverse-proxy-only', '-rpo', 'reverse_proxy_only', is_flag=True, help="No SOCKS5 server, only for reverse proxy")
-@click.option('--reverse-ip', help="Reverse proxy IP", type=str)
-@click.option('--reverse-port', help="Reverse proxy port", type=int, default=-1, show_default=True)
+@click.option('--reverse-endpoint', '-re', 'reverse_endpoints', help="Endpoints(host:port) for reverse proxy", multiple=True, type=str)
+@click.option('--reverse-ip', help="Reverse proxy IP", type=str, hidden=True)
+@click.option('--reverse-port', help="Reverse proxy port", type=int, default=-1, show_default=True, hidden=True)
 @click.option('--no-reverse-global', 'no_reverse_global', is_flag=True, help="Reverse proxy listen on localhost")
 @click.option('--log-record', '-l', 'save_log', is_flag=True, help="Save log to file (elephant-client.log)")
 @click.option('--request-timeout', '-t', 'session_request_timeout', default=3, help="Session request timeout (seconds)", show_default=True, type=int)
@@ -512,7 +513,7 @@ def _cli(
         quiet, save_log, session_request_timeout, no_color,
         proxy_ip, proxy_port, global_,
         enable_shell_proxy,
-        enable_reverse_proxy, reverse_ip, reverse_port, no_reverse_global,
+        enable_reverse_proxy, reverse_endpoints, reverse_ip, reverse_port, no_reverse_global,
         verbose, reverse_proxy_only,
 ):
     global _quiet
@@ -530,18 +531,34 @@ def _cli(
         assert 0 < proxy_port < 65536, "Invalid proxy port"
         _proxy_port = proxy_port
 
+    if reverse_endpoints:
+        nomalized = []
+        for ep in reverse_endpoints:
+            if ':' in ep:
+                h, p = ep.split(':')
+                p = int(p)
+                nomalized.append((h, p))
+            else:
+                if reverse_port > 0:
+                    nomalized.append((ep, reverse_port))
+                else:
+                    nomalized.append((ep, 8080))
+        reverse_endpoints = [{'host': h, 'port': p} for h, p in nomalized]
+    else:
+        reverse_endpoints = []
+    if reverse_ip and reverse_port > 0:
+        reverse_endpoints.append({'host': reverse_ip, 'port': reverse_port})
+
     _no_color = no_color
     _quiet = quiet
     _session_request_timeout = session_request_timeout
-    _enable_reverse_proxy = enable_reverse_proxy or reverse_proxy_only or bool(reverse_ip and reverse_port > 0)
+    _enable_reverse_proxy = enable_reverse_proxy or reverse_proxy_only or reverse_endpoints
     _enable_shell_proxy = enable_shell_proxy
 
     hello_params = {}
     hello_params['alias'] = alias or socket.gethostname()
-    if reverse_ip and reverse_port > 0:
-        hello_params['reverseHost'] = reverse_ip
-        hello_params['reversePort'] = reverse_port
-        hello_params['reverseGlobal'] = not no_reverse_global
+    hello_params['reverseEndpoints'] = reverse_endpoints
+    hello_params['reverseGlobal'] = not no_reverse_global
 
     if save_log or quiet:
         _config_logging()
